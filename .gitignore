@@ -46,3 +46,9 @@ CLAUDE.md
 db/
 charts/
 *.db
+
+# Runtime artifacts
+.alphalens/
+node_modules/
+test-results/
+package-lock.json
