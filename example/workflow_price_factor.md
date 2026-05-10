@@ -174,7 +174,9 @@ Starting Alphalens WebUI (dev mode)...
 - 页面左上角有 **Alphalens** Logo
 - 右上角有暗黑模式切换按钮（月亮/太阳图标）
 
-![Session 列表空状态]
+![Session 列表](images/01-session-list.png)
+
+*Session 列表页：显示已创建的 "Price Factor Demo" Session*
 
 ---
 
@@ -193,6 +195,10 @@ Starting Alphalens WebUI (dev mode)...
 - URL 变为：`http://localhost:5173/sessions/{uuid}/upload`
 - 页面左侧 Sidebar 显示 Session 信息（名称、日期、状态）
 - Sidebar 中的导航步骤显示当前在 **Upload**（第 1 步）
+
+![创建 Session 对话框](images/02-create-session-dialog.png)
+
+*Create Session 对话框：输入名称和描述后点击 Create*
 
 ---
 
@@ -215,6 +221,10 @@ Starting Alphalens WebUI (dev mode)...
 - 显示文件名：`factor.csv`
 - 显示 **Remove** 按钮（可移除重新上传）
 - URL 保持不变（`/sessions/{uuid}/upload`）
+
+![上传页面](images/03-upload-files.png)
+
+*Upload 页面：两个上传区域分别对应 Factor Data 和 Price Data*
 
 > **注意**：此时页面底部的 "Configure Analysis" 按钮**还未出现**，因为价格数据尚未上传。系统需要同时拥有因子数据和价格数据才能进行分析。
 
@@ -270,6 +280,14 @@ Starting Alphalens WebUI (dev mode)...
 - 列名：`date`, `AAPL`, `MSFT`, `GOOGL`, `AMZN`, `JPM`
 - 总行数：**252 rows**
 
+![浏览因子数据](images/04-browse-factor.png)
+
+*Factor 标签页：显示因子数据表，含分页控件*
+
+![浏览价格数据](images/05-browse-price.png)
+
+*Price 标签页：显示价格数据表，宽格式*
+
 > **验证提示**：可以对比 Browse Data 页面和 CSV 文件的内容，确保数据一致。
 
 ---
@@ -296,6 +314,10 @@ Starting Alphalens WebUI (dev mode)...
 | **zero_aware** | 开关 | OFF | 价格无零值 |
 | **cumulative_returns** | 开关 | ON | 计算累积收益 |
 | **by_group** | 开关 | OFF | 每组分开展示 |
+
+![分析配置页面](images/06-configure.png)
+
+*Configure 页面：配置分析参数，包括 Periods、Quantiles、开关选项等*
 
 **详细操作：**
 
@@ -380,6 +402,10 @@ Starting Alphalens WebUI (dev mode)...
 - 所有步骤显示绿色勾选
 - 页面**自动跳转**到 Results 页面
 
+![分析进度页面](images/07-progress.png)
+
+*Progress 页面：监控 8 个 Pipeline 步骤的执行进度*
+
 **如果分析失败：**
 - 状态标签变为 **Failed** ❌
 - 显示错误信息
@@ -426,6 +452,10 @@ URL: `http://localhost:5173/sessions/{sid}/analysis/{aid}/results`
 | 10D | -0.005 | 0.112 | -0.04 |
 | 21D | 0.003 | 0.128 | 0.02 |
 
+![Summary 汇总页面](images/08-summary.png)
+
+*Results Summary 标签页：展示指标卡片、Alpha/Beta 汇总表和 IC 汇总表*
+
 ---
 
 #### 步骤 11：查看 IC 分析详情
@@ -458,6 +488,10 @@ URL: `http://localhost:5173/sessions/{sid}/analysis/{aid}/results`
 - 日期、IC 值、IC 的 Z-Score
 - 可按日期排序
 
+![IC 分析标签页](images/09-ic.png)
+
+*IC 标签页：IC 时间序列图、直方图和 QQ 图*
+
 ---
 
 #### 步骤 12：查看收益分析
@@ -482,6 +516,10 @@ URL: `http://localhost:5173/sessions/{sid}/analysis/{aid}/results`
 **平均分位数价差（Mean Quantile Spread）：**
 - 最高分位组 - 最低分位组（做多最高组、做空最低组）的累积收益
 - 预期：围绕 0 波动，没有明显趋势
+
+![收益分析标签页](images/10-returns.png)
+
+*Returns 标签页：分位数收益柱状图、累积收益曲线和平均分位数价差*
 
 ---
 
@@ -508,6 +546,10 @@ URL: `http://localhost:5173/sessions/{sid}/analysis/{aid}/results`
 - 负 Alpha：该股票收益低于预期
 - 由于价格因子无预测能力，Alpha 应接近 0 且不显著
 
+![Alpha-Beta 标签页](images/11-alpha-beta.png)
+
+*Alpha-Beta 标签页：展示每只股票在不同持有期下的 Alpha、Beta 和 t-stat*
+
 ---
 
 #### 步骤 14：查看换手率
@@ -527,6 +569,10 @@ URL: `http://localhost:5173/sessions/{sid}/analysis/{aid}/results`
 - Y 轴：自相关系数（0 - 1）
 - 衡量因子排名的稳定性
 - 预期：自相关系数接近 1（价格排名相对稳定，高价股通常保持高价）
+
+![换手率标签页](images/12-turnover.png)
+
+*Turnover 标签页：分位数换手率图和秩自相关系数图*
 
 ---
 
@@ -552,6 +598,14 @@ URL: `http://localhost:5173/sessions/{sid}/analysis/{aid}/results`
 - 加载完成后显示 Base64 PNG 图片
 - 图片下方有简短的图表说明
 - 可以放大查看（点击图片）
+
+![Charts 图表库](images/13-charts.png)
+
+*Charts 标签页：显示所有 8 张 matplotlib 生成的图表*
+
+![分析完成页面](images/14-analysis-complete.png)
+
+*Progress 页面（完成状态）：所有步骤显示绿色勾选，进度 100%*
 
 ---
 

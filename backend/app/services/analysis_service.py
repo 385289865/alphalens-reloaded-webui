@@ -115,17 +115,21 @@ class AnalysisService:
         # factor_quantile is on the factor_data, get unique time periods
         periods = config.periods if config.periods else [1, 5, 10]
         for period in periods[:1]:  # turnover computed on factor_quantile assignment
-            turnover = perf.quantile_turnover(
-                factor_data,  # uses factor_quantile column
-                quantile=None,
-                period=str(period),
-            )
-            turnover_dict = {int(q): turnover[q] for q in turnover.columns}
+            quantiles = sorted(factor_data["factor_quantile"].dropna().unique())
+            turnover_dict = {}
+            for q in quantiles:
+                try:
+                    q_turnover = perf.quantile_turnover(
+                        factor_data["factor_quantile"], quantile=q, period=period,
+                    )
+                    turnover_dict[int(q)] = q_turnover
+                except Exception:
+                    pass
             self.data_service.save_quantile_turnover(analysis_id, turnover_dict)
 
         # Step 8: Factor rank autocorrelation
         for period in periods[:1]:
-            autocorr = perf.factor_rank_autocorrelation(factor_data, period=str(period))
+            autocorr = perf.factor_rank_autocorrelation(factor_data, period=period)
             self.data_service.save_autocorrelation(analysis_id, autocorr)
 
         self._report(progress_callback, "computing_cumulative_returns", 80)
@@ -140,12 +144,14 @@ class AnalysisService:
         self.data_service.save_factor_returns(analysis_id, factor_returns)
 
         # Cumulative returns for each period
-        for period in periods:
-            cum_ret = perf.cumulative_returns(factor_returns[period])
+        from alphalens.utils import get_forward_returns_columns
+        fr_cols = get_forward_returns_columns(factor_returns.columns)
+        for col in fr_cols:
+            cum_ret = perf.cumulative_returns(factor_returns[col])
             self.data_service.save_cumulative_returns(
                 analysis_id,
                 pd.Series({cum_ret.index[i]: cum_ret.iloc[i]
-                          for i in range(len(cum_ret))}, name=str(period))
+                          for i in range(len(cum_ret))}, name=str(col))
             )
 
         self._report(progress_callback, "saving_config", 90)

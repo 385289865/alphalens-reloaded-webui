@@ -121,32 +121,41 @@ async def get_analysis_status(
             if async_result.state == "PROGRESS":
                 meta = async_result.info or {}
                 current_stage = meta.get("stage")
-                progress_pct = meta.get("progress_pct", 0)
+                progress_pct = int(meta.get("progress_pct", 0))
                 message = meta.get("message")
             elif async_result.state == "PENDING":
-                progress_pct = 0
                 current_stage = "queued"
                 message = "Task is queued"
             elif async_result.state == "STARTED":
-                progress_pct = 0
                 current_stage = "starting"
                 message = "Task is starting"
-            elif async_result.state == "SUCCESS":
+            elif async_result.state in ("SUCCESS",):
                 progress_pct = 100
                 current_stage = "completed"
                 message = "Analysis completed"
             elif async_result.state == "FAILURE":
-                progress_pct = 0
                 current_stage = "failed"
                 message = str(async_result.info) if async_result.info else "Unknown error"
         except Exception:
-            # Fall back to DuckDB task_progress
-            if task_id:
-                tp = data_service.get_task_progress(task_id)
-                if tp:
-                    current_stage = tp.get("current_stage")
-                    progress_pct = tp.get("progress_pct", 0)
-                    message = tp.get("message")
+            pass
+
+    # If analysis is already terminal, DB status takes priority
+    db_status = run["status"]
+    if db_status in ("completed", "failed"):
+        progress_pct = 100 if db_status == "completed" else 0
+        current_stage = db_status
+        message = run.get("error_message") or ("Analysis completed" if db_status == "completed" else "Unknown error")
+
+    # Fallback: try DuckDB task_progress if Celery didn't provide stage info
+    if not current_stage and task_id:
+        try:
+            tp = data_service.get_task_progress(task_id)
+            if tp:
+                current_stage = tp.get("current_stage")
+                progress_pct = int(tp.get("progress_pct", 0))
+                message = tp.get("message")
+        except Exception:
+            pass
 
     return AnalysisStatusResponse(
         analysis_id=analysis_id,
