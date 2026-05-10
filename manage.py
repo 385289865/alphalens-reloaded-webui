@@ -236,11 +236,71 @@ def cli():
 @cli.command()
 @click.option("--prod", is_flag=True, help="Start in production mode")
 @click.option("--test", is_flag=True, hidden=True, help="Start in test mode (no frontend)")
-def start(prod: bool, test: bool):
+@click.option("--generate-test-data", is_flag=True,
+              help="Generate test CSV files (5 assets, price as factor) in db/test_data/")
+@click.option("--generate-test-db", is_flag=True,
+              help="Generate test data AND pre-load into DuckDB for immediate analysis")
+def start(prod: bool, test: bool, generate_test_data: bool, generate_test_db: bool):
     """Start all services in order: redis → backend → celery → frontend."""
     mode = "prod" if prod else "dev"
     click.echo(f"Starting Alphalens WebUI ({mode} mode)...")
 
+    # ── Generate test data ──────────────────────────────────────
+    output_dir = "db/test_data"
+    if generate_test_data or generate_test_db:
+        click.echo("\n── Generating test dataset (price as cross-sectional factor) ──")
+        from backend.scripts.generate_test_data import (
+            generate_price_factor_dataset,
+            load_csv_to_dataframes,
+        )
+        generate_price_factor_dataset(output_dir=output_dir)
+
+    # ── Pre-load into DuckDB ────────────────────────────────────
+    if generate_test_db:
+        click.echo("\n── Loading test data into DuckDB ──")
+        session_name = "Price Factor Demo"
+        try:
+            from backend.app.services.data_service import DataService
+            from backend.app.config import Settings
+
+            cfg = Settings()
+            # Override paths to match manage.py conventions
+            cfg.DB_PATH = str(DB_PATH)
+            cfg.RAW_DATA_DIR = str(RAW_DIR)
+
+            # Ensure DB directory exists
+            DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+            # Remove existing DB so we get a clean start
+            if DB_PATH.exists():
+                DB_PATH.unlink()
+
+            service = DataService(db_path=str(DB_PATH))
+            session_id = service.create_session(name=session_name)
+
+            factor_df, prices_df = load_csv_to_dataframes(output_dir=output_dir)
+            factor_rows = service.ingest_factor_csv(session_id, factor_df)
+            price_rows, asset_count = service.ingest_prices_csv(session_id, prices_df)
+
+            service.update_session_stats(
+                session_id=session_id,
+                row_count_factor=factor_rows,
+                row_count_prices=price_rows,
+                date_range_start=prices_df.iloc[:, 0].min().date(),
+                date_range_end=prices_df.iloc[:, 0].max().date(),
+                asset_count=asset_count,
+            )
+            click.echo(f"  Session created:   {session_id}")
+            click.echo(f"  Session name:      {session_name}")
+            click.echo(f"  Factor rows:       {factor_rows}")
+            click.echo(f"  Price rows:        {price_rows}")
+            click.echo(f"  Assets:            {asset_count}")
+            click.echo(f"  DuckDB path:       {DB_PATH}")
+        except Exception as e:
+            click.echo(f"  FAILED to load test data: {e}")
+            import traceback
+            traceback.print_exc()
+
+    # ── Start services ──────────────────────────────────────────
     for svc in SERVICES_ORDER:
         if test and svc == "frontend":
             continue  # Skip frontend in test mode
