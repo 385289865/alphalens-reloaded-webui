@@ -31,3 +31,18 @@ update
 conda/recipe
 _static
 _version.py
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+.skill/
+.claude/
+
+CLAUDE.md
+
+# Alphalens WebUI data storage
+db/
+charts/
+*.db
