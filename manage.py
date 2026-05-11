@@ -1,228 +1,79 @@
 #!/usr/bin/env python3
-"""Alphalens WebUI - Service Management CLI.
+"""Alphalens WebUI - Plugin-based Service Management CLI.
 
-Unified command to start, stop, restart, and monitor all services:
-- FastAPI backend (uvicorn)
-- Celery worker
-- Redis (via docker or system redis-server)
-- Vite frontend dev server (npm run dev)
+Auto-discovers all services from services/definitions/*.py and
+services/registry.json.  3rd-party services can register via:
+    python manage.py service register <name> <command_dev> --health-check ...
 
 Usage:
-    python manage.py start              Start all services (dev mode)
-    python manage.py start --prod       Start in production mode
-    python manage.py stop               Stop all services gracefully
-    python manage.py stop backend       Stop specific service
-    python manage.py restart            Restart all services
-    python manage.py status             Show health status of all services
-    python manage.py logs backend       Tail logs for a service
-    python manage.py ps                 List running processes
-    python manage.py health             Health check for all services
-    python manage.py db info            Show DuckDB stats
-    python manage.py db reset           Drop and recreate DuckDB
-    python manage.py init               First-time setup
-    python manage.py test               Run all tests
-    python manage.py test contract      Run API contract tests only
-    python manage.py test e2e           Run E2E Playwright tests only
+    python manage.py service list               List all registered services
+    python manage.py service register ...       Register a new service
+    python manage.py service unregister <name>  Remove a registered service
+
+    python manage.py start                       Start all services
+    python manage.py start --prod                Production mode
+    python manage.py stop [service]              Stop one or all services
+    python manage.py restart [service]           Restart a service
+    python manage.py status                      Show all service health
+    python manage.py logs <service>              Tail service logs
+    python manage.py ps                          List running processes
+    python manage.py health                      Health check all services
+    python manage.py db info                     Show DuckDB stats
+    python manage.py db reset                    Drop and recreate DuckDB
+    python manage.py init                        First-time setup
+    python manage.py test                        Run tests
 """
 
 import json
 import os
-import signal
-import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
 import click
+
+from services import (
+    ServiceDef, PID_DIR, LOG_DIR, ROOT as SVC_ROOT,
+    start_service as svc_start,
+    stop_service as svc_stop,
+    get_status as svc_status,
+    _ensure_dirs,
+    _pid_file, _read_pid, _is_running,
+    _log_file, run_health_check,
+)
+from services.registry import discover_all, register_service, unregister_service
+
 
 # ── Paths ──────────────────────────────────────────────────────────
 ROOT = Path(__file__).resolve().parent
 ALPHALENS_DIR = ROOT / ".alphalens"
 LOGS_DIR = ALPHALENS_DIR / "logs"
-PID_DIR = ALPHALENS_DIR / "pids"
 DB_PATH = ROOT / "db" / "alphalens.db"
 RAW_DIR = ROOT / "db" / "raw"
 FRONTEND_DIR = ROOT / "frontend"
 
-SERVICES_ORDER = ["redis", "backend", "celery", "frontend"]
-
-SERVICE_COMMANDS = {
-    "redis": {
-        "dev": ["redis-server", "--port", "6379"],
-        "prod": ["docker", "run", "--rm", "-p", "6379:6379", "redis:7-alpine"],
-        "health": lambda: _tcp_check("localhost", 6379),
-    },
-    "backend": {
-        "dev": [
-            sys.executable, "-m", "uvicorn",
-            "backend.app.main:app",
-            "--host", "0.0.0.0", "--port", "8000", "--reload",
-        ],
-        "prod": [
-            sys.executable, "-m", "uvicorn",
-            "backend.app.main:app",
-            "--host", "0.0.0.0", "--port", "8000",
-            "--workers", "4",
-        ],
-        "health": lambda: _http_check("http://localhost:8000/api/v1/health"),
-    },
-    "celery": {
-        "dev": [
-            sys.executable, "-m", "celery",
-            "-A", "backend.app.celery_app", "worker",
-            "--loglevel=info", "--concurrency=2",
-        ],
-        "prod": [
-            sys.executable, "-m", "celery",
-            "-A", "backend.app.celery_app", "worker",
-            "--loglevel=info", "--concurrency=4",
-        ],
-        "health": lambda: _file_check(DB_PATH),
-    },
-    "frontend": {
-        "dev": ["npm", "run", "dev", "--prefix", str(FRONTEND_DIR)],
-        "prod": ["npm", "run", "build", "--prefix", str(FRONTEND_DIR)],
-        "health": lambda: _http_check("http://localhost:5173"),
-    },
-}
+SERVICES_CACHE = None
 
 
-# ── Helpers ────────────────────────────────────────────────────────
-
-def _ensure_dirs():
-    ALPHALENS_DIR.mkdir(parents=True, exist_ok=True)
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    PID_DIR.mkdir(parents=True, exist_ok=True)
-    os.makedirs(DB_PATH.parent, exist_ok=True)
-    os.makedirs(RAW_DIR, exist_ok=True)
+def get_services() -> dict[str, ServiceDef]:
+    """Get all services (with caching for performance)."""
+    global SERVICES_CACHE
+    if SERVICES_CACHE is None:
+        SERVICES_CACHE = discover_all()
+    return SERVICES_CACHE
 
 
-def _pid_file(service: str) -> Path:
-    return PID_DIR / f"{service}.pid"
+def invalidate_cache():
+    global SERVICES_CACHE
+    SERVICES_CACHE = None
 
 
-def _log_file(service: str) -> Path:
-    return LOGS_DIR / f"{service}.log"
+def get_service_names() -> list[str]:
+    return list(get_services().keys())
 
 
-def _save_pid(service: str, pid: int):
-    _pid_file(service).write_text(str(pid))
-
-
-def _read_pid(service: str) -> Optional[int]:
-    pf = _pid_file(service)
-    if pf.exists():
-        try:
-            return int(pf.read_text().strip())
-        except (ValueError, OSError):
-            return None
-    return None
-
-
-def _remove_pid(service: str):
-    _pid_file(service).unlink(missing_ok=True)
-
-
-def _is_running(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except (OSError, ProcessLookupError):
-        return False
-
-
-def _tcp_check(host: str, port: int, timeout: float = 2.0) -> bool:
-    import socket
-    try:
-        s = socket.create_connection((host, port), timeout=timeout)
-        s.close()
-        return True
-    except (OSError, socket.error):
-        return False
-
-
-def _http_check(url: str, timeout: float = 3.0) -> bool:
-    import urllib.request
-    try:
-        urllib.request.urlopen(url, timeout=timeout)
-        return True
-    except Exception:
-        return False
-
-
-def _file_check(path: Path) -> bool:
-    return path.exists() and path.stat().st_size > 0
-
-
-def _start_service(service: str, mode: str = "dev"):
-    """Launch a service as a subprocess with PID tracking and logging."""
-    if _get_service_status(service)["running"]:
-        click.echo(f"  {service}: already running (PID {_read_pid(service)})")
-        return
-
-    cmd_info = SERVICE_COMMANDS[service]
-    cmd = cmd_info[mode]
-    log_f = _log_file(service)
-
-    click.echo(f"  {service}: starting... ", nl=False)
-
-    try:
-        with open(log_f, "a") as log:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=log,
-                stderr=log,
-                cwd=ROOT,
-                start_new_session=True,
-            )
-        _save_pid(service, proc.pid)
-        click.echo(f"PID {proc.pid}")
-    except FileNotFoundError as e:
-        click.echo(f"FAILED - {e}")
-
-
-def _stop_service(service: str, force: bool = False):
-    """Stop a service gracefully, then force kill after timeout."""
-    status = _get_service_status(service)
-    if not status["running"]:
-        click.echo(f"  {service}: not running")
-        return
-
-    pid = status["pid"]
-    click.echo(f"  {service}: stopping PID {pid}... ", nl=False)
-
-    # Try graceful shutdown
-    try:
-        os.kill(pid, signal.SIGTERM)
-        for _ in range(25):  # 5s timeout
-            if not _is_running(pid):
-                click.echo("stopped")
-                _remove_pid(service)
-                return
-            time.sleep(0.2)
-        # Force kill
-        if force or click.confirm("Graceful shutdown timeout. Force kill?", default=True):
-            os.kill(pid, signal.SIGKILL)
-            click.echo("force killed")
-        else:
-            click.echo("timeout")
-    except ProcessLookupError:
-        click.echo("not found")
-    finally:
-        _remove_pid(service)
-
-
-def _get_service_status(service: str) -> dict:
-    pid = _read_pid(service)
-    running = pid is not None and _is_running(pid)
-    health_fn = SERVICE_COMMANDS[service]["health"]
-    return {
-        "service": service,
-        "pid": pid,
-        "running": running,
-        "healthy": health_fn() if running else False,
-    }
+def get_sorted_services() -> list[ServiceDef]:
+    return list(get_services().values())
 
 
 # ── CLI Commands ───────────────────────────────────────────────────
@@ -233,138 +84,234 @@ def cli():
     _ensure_dirs()
 
 
+# ── Service Registry Management ────────────────────────────────────
+
+@cli.group()
+def service():
+    """Manage the service registry (list / register / unregister)."""
+
+
+@service.command(name="list")
+def service_list():
+    """List all registered services with their metadata."""
+    svcs = get_sorted_services()
+    if not svcs:
+        click.echo("No services registered.")
+        return
+
+    click.echo(f"{'Name':<16} {'Display Name':<22} {'Order':<8} {'Port':<8} {'Health Check':<30}")
+    click.echo("-" * 90)
+    for svc in svcs:
+        click.echo(
+            f"{svc.name:<16} {svc.display_name:<22} {svc.order:<8} "
+            f"{svc.port if svc.port else '-':<8} {svc.health_check:<30}"
+        )
+    click.echo(f"\nTotal: {len(svcs)} services")
+
+
+@service.command()
+@click.argument("name")
+@click.argument("command_dev", nargs=-1, required=True)
+@click.option("--display-name", default="", help="Human-readable name")
+@click.option("--description", default="", help="Service description")
+@click.option("--command-prod", multiple=True, type=str, help="Production command tokens (repeatable)")
+@click.option("--health-check", default="", help="Health check (tcp:host:port | http:url | file:path)")
+@click.option("--depends-on", default="", help="Comma-separated dependency names")
+@click.option("--order", default=50, type=int, help="Start order (lower = earlier)")
+@click.option("--port", default=0, type=int, help="Service port")
+@click.option("--persistent", is_flag=True, help="Runs in background (e.g., database)")
+def register(name, command_dev, display_name, description, command_prod,
+             health_check, depends_on, order, port, persistent):
+    """Register a new service dynamically.
+
+    NAME must be unique. COMMAND_DEV is the command to start the service.
+    Example:
+        python manage.py service register my-worker --order 35 \\
+            --health-check "http:http://localhost:9000/health" \\
+            -- python3 -m my_worker.server
+    """
+    existing = get_services().get(name)
+    if existing:
+        if not click.confirm(f"Service '{name}' already exists. Override?"):
+            return
+
+    svc = ServiceDef(
+        name=name,
+        display_name=display_name or name,
+        description=description,
+        command_dev=list(command_dev),
+        command_prod=list(command_prod) if command_prod else list(command_dev),
+        health_check=health_check,
+        depends_on=[d.strip() for d in depends_on.split(",") if d.strip()],
+        order=order,
+        port=port,
+        persistent=persistent,
+    )
+    result = register_service(svc)
+    invalidate_cache()
+    click.echo(f"  {result['name']}: {result['status']}")
+
+
+@service.command()
+@click.argument("name")
+def unregister(name):
+    """Remove a dynamically-registered service by name."""
+    result = unregister_service(name)
+    invalidate_cache()
+    click.echo(f"  {result['name']}: {result['status']}")
+
+
+# ── Process Management ─────────────────────────────────────────────
+
 @cli.command()
 @click.option("--prod", is_flag=True, help="Start in production mode")
-@click.option("--test", is_flag=True, hidden=True, help="Start in test mode (no frontend)")
+@click.option("--test", is_flag=True, hidden=True, help="Test mode (no frontend)")
 @click.option("--generate-test-data", is_flag=True,
-              help="Generate test CSV files (5 assets, price as factor) in db/test_data/")
+              help="Generate test CSV files in db/test_data/")
 @click.option("--generate-test-db", is_flag=True,
-              help="Generate test data AND pre-load into DuckDB for immediate analysis")
-def start(prod: bool, test: bool, generate_test_data: bool, generate_test_db: bool):
-    """Start all services in order: redis → backend → celery → frontend."""
+              help="Generate test data AND pre-load into DuckDB")
+@click.argument("service_name", required=False, default=None)
+def start(prod: bool, test: bool, generate_test_data: bool,
+          generate_test_db: bool, service_name: str):
+    """Start all services, or a specific service."""
     mode = "prod" if prod else "dev"
-    click.echo(f"Starting Alphalens WebUI ({mode} mode)...")
+    click.echo(f"Alphalens WebUI ({mode} mode)")
 
     # ── Generate test data ──────────────────────────────────────
     output_dir = "db/test_data"
     if generate_test_data or generate_test_db:
-        click.echo("\n── Generating test dataset (price as cross-sectional factor) ──")
-        from backend.scripts.generate_test_data import (
-            generate_price_factor_dataset,
-            load_csv_to_dataframes,
-        )
+        click.echo("\n── Generating test dataset ──")
+        from backend.scripts.generate_test_data import generate_price_factor_dataset
         generate_price_factor_dataset(output_dir=output_dir)
 
-    # ── Pre-load into DuckDB ────────────────────────────────────
     if generate_test_db:
         click.echo("\n── Loading test data into DuckDB ──")
-        session_name = "Price Factor Demo"
-        try:
-            from backend.app.services.data_service import DataService
-            from backend.app.config import Settings
+        from backend.scripts.generate_test_data import load_csv_to_dataframes
+        from backend.app.services.data_service import DataService
+        from backend.app.config import Settings
+        cfg = Settings()
+        cfg.DB_PATH = str(DB_PATH)
+        cfg.RAW_DATA_DIR = str(RAW_DIR)
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if DB_PATH.exists():
+            DB_PATH.unlink()
+        ds = DataService(db_path=str(DB_PATH))
+        session_id = ds.create_session(name="Price Factor Demo")
+        factor_df, prices_df = load_csv_to_dataframes(output_dir=output_dir)
+        factor_rows = ds.ingest_factor_csv(session_id, factor_df)
+        price_rows, asset_count = ds.ingest_prices_csv(session_id, prices_df)
+        ds.update_session_stats(
+            session_id=session_id,
+            row_count_factor=factor_rows,
+            row_count_prices=price_rows,
+            date_range_start=prices_df.iloc[:, 0].min().date(),
+            date_range_end=prices_df.iloc[:, 0].max().date(),
+            asset_count=asset_count,
+        )
+        click.echo(f"  Session: {session_id} ({factor_rows} factor / {price_rows} price rows)")
 
-            cfg = Settings()
-            # Override paths to match manage.py conventions
-            cfg.DB_PATH = str(DB_PATH)
-            cfg.RAW_DATA_DIR = str(RAW_DIR)
+    # ── Start service(s) ────────────────────────────────────────
+    if service_name:
+        svc = get_services().get(service_name)
+        if not svc:
+            click.echo(f"Unknown service '{service_name}'. Use 'manage.py service list'")
+            return
+        result = svc_start(svc, mode)
+        click.echo(f"  {svc.name}: {result}")
+        return
 
-            # Ensure DB directory exists
-            DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-            # Remove existing DB so we get a clean start
-            if DB_PATH.exists():
-                DB_PATH.unlink()
-
-            service = DataService(db_path=str(DB_PATH))
-            session_id = service.create_session(name=session_name)
-
-            factor_df, prices_df = load_csv_to_dataframes(output_dir=output_dir)
-            factor_rows = service.ingest_factor_csv(session_id, factor_df)
-            price_rows, asset_count = service.ingest_prices_csv(session_id, prices_df)
-
-            service.update_session_stats(
-                session_id=session_id,
-                row_count_factor=factor_rows,
-                row_count_prices=price_rows,
-                date_range_start=prices_df.iloc[:, 0].min().date(),
-                date_range_end=prices_df.iloc[:, 0].max().date(),
-                asset_count=asset_count,
-            )
-            click.echo(f"  Session created:   {session_id}")
-            click.echo(f"  Session name:      {session_name}")
-            click.echo(f"  Factor rows:       {factor_rows}")
-            click.echo(f"  Price rows:        {price_rows}")
-            click.echo(f"  Assets:            {asset_count}")
-            click.echo(f"  DuckDB path:       {DB_PATH}")
-        except Exception as e:
-            click.echo(f"  FAILED to load test data: {e}")
-            import traceback
-            traceback.print_exc()
-
-    # ── Start services ──────────────────────────────────────────
-    for svc in SERVICES_ORDER:
-        if test and svc == "frontend":
-            continue  # Skip frontend in test mode
-        _start_service(svc, mode)
+    svcs = get_sorted_services()
+    click.echo(f"\n── Starting {len(svcs)} services ──")
+    for svc in svcs:
+        if test and svc.name == "frontend":
+            continue
+        click.echo(f"  [{svc.order:02d}] {svc.name}: ", nl=False)
+        result = svc_start(svc, mode)
+        click.echo(result)
         time.sleep(1)
 
-    click.echo("\nWaiting for services to become healthy...")
-    for svc in SERVICES_ORDER:
-        if test and svc == "frontend":
+    # ── Health checks ───────────────────────────────────────────
+    click.echo("\n── Health checks ──")
+    failures = 0
+    for svc in svcs:
+        if test and svc.name == "frontend":
             continue
-        health_fn = SERVICE_COMMANDS[svc]["health"]
-        for i in range(15):
-            if health_fn():
-                click.echo(f"  {svc}: healthy")
+        click.echo(f"  {svc.name}: ", nl=False)
+        for _ in range(15):
+            if run_health_check(svc.health_check):
+                click.echo("healthy")
                 break
             time.sleep(1)
         else:
-            click.echo(f"  {svc}: NOT healthy (check logs)")
+            click.echo("NOT healthy")
+            failures += 1
 
-    click.echo("\nDone. Use 'python manage.py status' to check all services.")
-
-
-@cli.command()
-@click.argument("service", type=click.Choice(SERVICES_ORDER + ["all"]), default="all")
-def stop(service: str):
-    """Stop one or all services (reverse order)."""
-    svcs = SERVICES_ORDER[::-1] if service == "all" else [service]
-    for svc in svcs:
-        _stop_service(svc)
+    if failures:
+        click.echo(f"\n{ failures} service(s) unhealthy. Check logs: python manage.py logs <service>")
+    else:
+        click.echo("\nAll services healthy.")
 
 
 @cli.command()
-@click.argument("service", type=click.Choice(SERVICES_ORDER + ["all"]), default="all")
-def restart(service: str):
+@click.argument("service_name", required=False, default=None)
+def stop(service_name: str):
+    """Stop one or all services."""
+    if service_name:
+        result = svc_stop(service_name)
+        click.echo(f"  {service_name}: {result}")
+        return
+
+    svcs = get_sorted_services()
+    for svc in reversed(svcs):
+        click.echo(f"  {svc.name}: ", nl=False)
+        result = svc_stop(svc.name)
+        click.echo(result)
+
+
+@cli.command()
+@click.argument("service_name", required=False, default=None)
+def restart(service_name: str):
     """Restart one or all services."""
-    svcs = SERVICES_ORDER[::-1] if service == "all" else [service]
+    if service_name:
+        click.echo(f"  {service_name}: ", nl=False)
+        click.echo(svc_stop(service_name, force=True))
+        svc = get_services().get(service_name)
+        if svc:
+            click.echo(f"  {service_name}: ", nl=False)
+            click.echo(svc_start(svc))
+        return
+
+    svcs = get_sorted_services()
+    for svc in reversed(svcs):
+        svc_stop(svc.name, force=True)
     for svc in svcs:
-        _stop_service(svc, force=True)
-    for svc in (svcs[::-1] if service != "all" else SERVICES_ORDER):
-        _start_service(svc)
+        click.echo(f"  {svc.name}: ", nl=False)
+        click.echo(svc_start(svc))
 
 
 @cli.command()
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def status(as_json: bool):
     """Show health status of all services."""
+    svcs = get_sorted_services()
     results = {}
-    for svc in SERVICES_ORDER:
-        s = _get_service_status(svc)
-        results[svc] = s
+    for svc in svcs:
+        s = svc_status(svc)
+        results[svc.name] = s
 
     if as_json:
         click.echo(json.dumps(results, indent=2, default=str))
         return
 
-    click.echo(f"{'Service':<12} {'PID':<8} {'Running':<10} {'Healthy':<10}")
-    click.echo("-" * 42)
+    click.echo(f"{'Service':<16} {'PID':<8} {'Running':<10} {'Healthy':<10}")
+    click.echo("-" * 44)
     all_healthy = True
-    for svc in SERVICES_ORDER:
-        s = results[svc]
+    for svc in svcs:
+        s = results[svc.name]
         r = "✓" if s["running"] else "✗"
         h = "✓" if s["healthy"] else "✗"
         pid = str(s["pid"]) if s["pid"] else "-"
-        click.echo(f"{svc:<12} {pid:<8} {r:<10} {h:<10}")
+        click.echo(f"{svc.name:<16} {pid:<8} {r:<10} {h:<10}")
         if not s["healthy"]:
             all_healthy = False
 
@@ -376,15 +323,15 @@ def status(as_json: bool):
 
 
 @cli.command()
-@click.argument("service", type=click.Choice(SERVICES_ORDER))
+@click.argument("service_name")
 @click.option("--lines", default=50, help="Number of lines to show")
-def logs(service: str, lines: int):
+def logs(service_name: str, lines: int):
     """Tail logs for a service."""
-    log_f = _log_file(service)
+    log_f = _log_file(service_name)
     if not log_f.exists():
-        click.echo(f"No logs found for {service}")
+        click.echo(f"No logs found for '{service_name}'")
         return
-    click.echo(f"=== {service} logs (last {lines} lines) ===")
+    click.echo(f"=== {service_name} logs (last {lines} lines) ===")
     content = log_f.read_text().splitlines()
     for line in content[-lines:]:
         click.echo(line)
@@ -392,32 +339,34 @@ def logs(service: str, lines: int):
 
 @cli.command()
 def ps():
-    """List running processes managed by alphalensctl."""
-    click.echo(f"{'Service':<12} {'PID':<8} {'Status':<10} {'Uptime':<12}")
-    click.echo("-" * 44)
-    for svc in SERVICES_ORDER:
-        s = _get_service_status(svc)
+    """List running processes."""
+    svcs = get_sorted_services()
+    click.echo(f"{'Service':<16} {'PID':<8} {'Status':<10} {'Uptime':<12}")
+    click.echo("-" * 46)
+    for svc in svcs:
+        s = svc_status(svc)
         if s["running"]:
             try:
                 import psutil
                 p = psutil.Process(s["pid"])
                 uptime = time.time() - p.create_time()
                 uptime_str = f"{uptime / 60:.0f}m" if uptime > 60 else f"{uptime:.0f}s"
-            except (ImportError, psutil.NoSuchProcess):
+            except (ImportError, Exception):
                 uptime_str = "-"
-            click.echo(f"{svc:<12} {s['pid']:<8} {'running':<10} {uptime_str:<12}")
+            click.echo(f"{svc.name:<16} {s['pid']:<8} {'running':<10} {uptime_str:<12}")
         else:
-            click.echo(f"{svc:<12} {'-':<8} {'stopped':<10} {'-':<12}")
+            click.echo(f"{svc.name:<16} {'-':<8} {'stopped':<10} {'-':<12}")
 
 
 @cli.command()
 def health():
     """Run health checks for all services."""
     all_ok = True
-    for svc in SERVICES_ORDER:
-        h = SERVICE_COMMANDS[svc]["health"]()
+    svcs = get_sorted_services()
+    for svc in svcs:
+        h = run_health_check(svc.health_check)
         status = "✓" if h else "✗"
-        click.echo(f"  {svc}: {status}")
+        click.echo(f"  {svc.name}: {status}")
         if not h:
             all_ok = False
     return 0 if all_ok else 1
@@ -458,7 +407,7 @@ def info():
                 click.echo(f"  {tbl:<35} {'?':>8} rows  {cols} cols")
         conn.close()
     except ImportError:
-        click.echo("DuckDB not installed. Install with: pip install duckdb")
+        click.echo("DuckDB not installed.")
 
 
 @db.command()
@@ -479,22 +428,28 @@ def init():
     click.echo("Initializing Alphalens WebUI...")
     _ensure_dirs()
 
-    # Backend dependencies
     click.echo("\n1. Installing backend dependencies...")
+    import subprocess
     subprocess.run(
         [sys.executable, "-m", "pip", "install", "-e", ".[web]"],
         cwd=ROOT, capture_output=False,
     )
 
-    # Frontend dependencies
     if FRONTEND_DIR.exists() and (FRONTEND_DIR / "package.json").exists():
         click.echo("\n2. Installing frontend dependencies...")
         subprocess.run(["npm", "install"], cwd=FRONTEND_DIR, capture_output=False)
     else:
         click.echo("\n2. Frontend directory not found. Skipping npm install.")
 
-    click.echo("\n3. Creating database directory...")
+    click.echo("\n3. Creating database directories...")
     os.makedirs(DB_PATH.parent, exist_ok=True)
+    os.makedirs(ROOT / "db" / "jobs", exist_ok=True)
+
+    # Show available services
+    svcs = discover_all()
+    click.echo(f"\n4. Registered services ({len(svcs)}):")
+    for name, svc in svcs.items():
+        click.echo(f"   - {name}: {svc.display_name} (order={svc.order})")
 
     click.echo("\nDone. Run 'python manage.py start' to start all services.")
 
@@ -509,6 +464,7 @@ def test():
 @test.command()
 def contract():
     """Run API contract tests (pytest)."""
+    import subprocess
     click.echo("Running API contract tests...")
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "backend/tests/", "-v", "-x"],
@@ -520,6 +476,7 @@ def contract():
 @test.command()
 def e2e():
     """Run E2E Playwright tests."""
+    import subprocess
     e2e_dir = ROOT / "e2e"
     if not (e2e_dir / "playwright.config.ts").exists():
         click.echo("E2E tests not configured. Skipping.")
@@ -535,21 +492,15 @@ def e2e():
 @test.command()
 @click.option("--coverage", is_flag=True, help="Run with coverage")
 def all_tests(coverage: bool):
-    """Run all tests: contract + frontend + e2e."""
+    """Run all tests."""
+    import subprocess
     click.echo("Running all tests...")
-    errors = 0
-
-    # API Contract tests
-    click.echo("\n=== API Contract Tests ===")
     cov_args = ["--cov=backend", "--cov-report=term"] if coverage else []
     r = subprocess.run(
         [sys.executable, "-m", "pytest", "backend/tests/", "-v"] + cov_args,
         cwd=ROOT,
     )
-    if r.returncode != 0:
-        errors += 1
-
-    sys.exit(errors)
+    sys.exit(r.returncode)
 
 
 if __name__ == "__main__":
