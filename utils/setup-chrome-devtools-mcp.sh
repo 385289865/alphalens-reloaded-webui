@@ -13,6 +13,9 @@
 
 SCRIPT_VERSION="1.0.0"
 CHROME_DEBUG_PORT=${CHROME_DEBUG_PORT:-9222}
+MODE="menu"            # install / uninstall / detect / menu
+FORCE_INSTALL="false"  # 强制重装
+INSTALL_SCOPE=""       # local / global，空表示交互式选择
 
 # ── ANSI 颜色 ──────────────────────────────────────────────
 RED='\033[0;31m'
@@ -55,6 +58,7 @@ STATUS_NODE_VER=""
 STATUS_NPX_VER=""
 STATUS_MCP_CONFIG=""
 STATUS_MCP_RUNNING=""
+STATUS_MCP_SCOPE=""
 
 # ── 日志函数 ──────────────────────────────────────────────
 log_info()    { echo -e "${BLUE}[INFO]${NC} $*"; }
@@ -226,8 +230,32 @@ detect_nodejs() {
 detect_mcp_config() {
     STATUS_MCP_CONFIG=""
     STATUS_MCP_RUNNING=""
+    STATUS_MCP_SCOPE=""
+    local project_root
+    project_root="$(get_project_root)"
+    local project_settings="${project_root}/.claude/settings.json"
 
-    # 检查全局 mcp.json
+    local has_local=false
+    local has_global=false
+
+    # 检查项目 settings.json（本地安装）
+    if [[ -f "$project_settings" ]]; then
+        if python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
+    if "chrome-devtools" in d.get("mcpServers", {}):
+        sys.exit(0)
+    sys.exit(1)
+except Exception:
+    sys.exit(1)
+' "$project_settings" 2>/dev/null; then
+            has_local=true
+        fi
+    fi
+
+    # 检查全局 mcp.json（全局安装）
     if [[ -f "$GLOBAL_MCP_JSON" ]]; then
         if python3 -c '
 import json, sys
@@ -240,12 +268,23 @@ try:
 except Exception:
     sys.exit(1)
 ' "$GLOBAL_MCP_JSON" 2>/dev/null; then
-            STATUS_MCP_CONFIG="已配置"
-        else
-            STATUS_MCP_CONFIG="未配置"
+            has_global=true
         fi
+    fi
+
+    # 判断状态和范围
+    if $has_local && $has_global; then
+        STATUS_MCP_CONFIG="已配置"
+        STATUS_MCP_SCOPE="全局+本地"
+    elif $has_local; then
+        STATUS_MCP_CONFIG="已配置"
+        STATUS_MCP_SCOPE="当前项目"
+    elif $has_global; then
+        STATUS_MCP_CONFIG="已配置"
+        STATUS_MCP_SCOPE="全局（自动同步到本项目）"
     else
         STATUS_MCP_CONFIG="未配置"
+        STATUS_MCP_SCOPE=""
     fi
 
     # 检查 DevTools 是否运行
@@ -385,7 +424,7 @@ show_report() {
     printf "  %-20s %b %s\n" "Chromium" "$([ "$STATUS_CHROME" == "已安装" ] && echo "${GREEN}已安装${NC}" || echo "${RED}未安装${NC}")" "$STATUS_CHROME_VER"
     printf "  %-20s %b %s\n" "Node.js" "$([ "$STATUS_NODE" == "已安装" ] && echo "${GREEN}已安装${NC}" || echo "${RED}未安装${NC}")" "$STATUS_NODE_VER"
     printf "  %-20s %b %s\n" "npm/npx" "$([ "$STATUS_NPX" == "已安装" ] && echo "${GREEN}已安装${NC}" || echo "${RED}未安装${NC}")" "$STATUS_NPX_VER"
-    printf "  %-20s %b\n" "MCP 配置" "$([ "$STATUS_MCP_CONFIG" == "已配置" ] && echo "${GREEN}已配置${NC}" || echo "${RED}未配置${NC}")"
+    printf "  %-20s %b %s\n" "MCP 配置" "$([ "$STATUS_MCP_CONFIG" == "已配置" ] && echo "${GREEN}已配置${NC}" || echo "${RED}未配置${NC}")" "${STATUS_MCP_SCOPE:+- $STATUS_MCP_SCOPE}"
     printf "  %-20s %b\n" "DevTools 端口" "$([ "$STATUS_MCP_RUNNING" == "运行中" ] && echo "${GREEN}${STATUS_MCP_RUNNING}${NC}" || echo "${YELLOW}${STATUS_MCP_RUNNING}${NC}")"
     echo ""
 
@@ -684,25 +723,27 @@ SCRIPT
 }
 
 setup_mcp_config() {
+    local scope="${1:-${INSTALL_SCOPE:-local}}"
     local project_root
     project_root="$(get_project_root)"
     local start_script_path="${project_root}/.claude/start-chrome-mcp.sh"
     local settings_json="${project_root}/.claude/settings.json"
-    local local_settings="${project_root}/.claude/settings.local.json"
 
     # 创建目录
     mkdir -p "$(dirname "$start_script_path")" "$GLOBAL_SCRIPTS_DIR" "$(dirname "$settings_json")"
 
-    # 1. 生成运行时脚本
+    # 1. 生成运行时脚本（无论哪种范围都需要）
     write_start_script "$(dirname "$start_script_path")"
 
-    # 2. 复制到全局
+    # 2. 复制到全局脚本目录（运行时脚本始终拷贝一份）
     cp "$start_script_path" "${GLOBAL_SCRIPTS_DIR}/start-chrome-mcp.sh"
     chmod +x "${GLOBAL_SCRIPTS_DIR}/start-chrome-mcp.sh"
 
-    # 3. 写入项目 settings.json（内联 mcpServers，与 playwright 相同模式）
-    log_info "配置 MCP 到项目 settings.json..."
-    python3 -c '
+    # 3. 根据范围写入配置
+    if [[ "$scope" == "local" ]]; then
+        # ── 本地：写入项目 settings.json mcpServers ──
+        log_info "配置 MCP 到项目 settings.json（范围: 当前项目）..."
+        python3 -c '
 import json, sys, os
 
 filepath = sys.argv[1]
@@ -723,12 +764,15 @@ data["mcpServers"]["chrome-devtools"] = entry
 with open(filepath, "w") as f:
     json.dump(data, f, indent=2, ensure_ascii=False)
 ' "$settings_json" "${GLOBAL_SCRIPTS_DIR}/start-chrome-mcp.sh"
-    log_success "settings.json 已更新: ${settings_json}"
+        log_success "settings.json 已更新: ${settings_json}"
 
-    # 4. 同步更新全局 mcp.json（保留已有 env 等字段）
-    log_info "同步全局 MCP JSON..."
-    mkdir -p "$(dirname "$GLOBAL_MCP_JSON")"
-    python3 -c '
+    elif [[ "$scope" == "global" ]]; then
+        # ── 全局：写入用户级 mcp.json + settings.local.json ──
+        local local_settings="${project_root}/.claude/settings.local.json"
+
+        log_info "配置 MCP 到全局 mcp.json（范围: 所有项目）..."
+        mkdir -p "$(dirname "$GLOBAL_MCP_JSON")"
+        python3 -c '
 import json, sys, os
 
 filepath = sys.argv[1]
@@ -743,15 +787,20 @@ data.setdefault("mcpServers", {})
 entry = data["mcpServers"].get("chrome-devtools", {})
 entry["command"] = "bash"
 entry["args"] = [start_script]
+# 保留已有的 env 等自定义字段
 data["mcpServers"]["chrome-devtools"] = entry
 
 with open(filepath, "w") as f:
     json.dump(data, f, indent=2, ensure_ascii=False)
 ' "$GLOBAL_MCP_JSON" "${GLOBAL_SCRIPTS_DIR}/start-chrome-mcp.sh"
-    log_success "MCP JSON 已同步: ${GLOBAL_MCP_JSON}"
+        log_success "mcp.json 已更新: ${GLOBAL_MCP_JSON}"
 
-    # 5. 同步 settings.local.json（enabledMcpjsonServers，冗余但无害）
-    if [[ -f "$local_settings" ]]; then
+        # 同步 settings.local.json（当前项目启用全局 MCP）
+        log_info "同步当前项目设置..."
+        mkdir -p "$(dirname "$local_settings")"
+        if [[ ! -f "$local_settings" ]]; then
+            echo '{}' > "$local_settings"
+        fi
         python3 -c '
 import json, sys, os
 filepath = sys.argv[1]
@@ -852,6 +901,23 @@ verify_all() {
 install_all() {
     detect_all
 
+    # ── 选择安装范围 ──
+    local scope="${INSTALL_SCOPE:-}"
+    if [[ -z "$scope" ]]; then
+        echo ""
+        log_info "请选择安装范围:"
+        echo "    1) 当前项目 (仅此项目可见 MCP)"
+        echo "    2) 全局 (所有项目可见 MCP)"
+        echo ""
+        read -r -p "  请输入 1 或 2 [默认: 1]: " scope_choice
+        case "${scope_choice:-1}" in
+            1|local)  scope="local" ;;
+            2|global) scope="global" ;;
+            *)        scope="local" ;;
+        esac
+    fi
+    INSTALL_SCOPE="$scope"
+
     local steps=5
     local current=0
 
@@ -863,6 +929,7 @@ install_all() {
     detect_system
     detect_env
     echo "  系统: ${DISTRO:-未知} | ${ARCH} | $([ "$IS_CONTAINER" = true ] && echo "容器" || echo "宿主")"
+    echo "  范围: $([ "$scope" == "global" ] && echo "全局 (所有项目)" || echo "当前项目")"
     log_success "环境检测完成"
 
     ((current++))
@@ -874,8 +941,8 @@ install_all() {
     install_nodejs || log_warn "Node.js 安装有问题，继续后续步骤..."
 
     ((current++))
-    log_step "${current}/${steps}" "配置 MCP"
-    setup_mcp_config || log_warn "MCP 配置有问题，继续后续步骤..."
+    log_step "${current}/${steps}" "配置 MCP（范围: $([ "$scope" == "global" ] && echo "全局" || echo "本地")）"
+    setup_mcp_config "$scope" || log_warn "MCP 配置有问题，继续后续步骤..."
 
     ((current++))
     log_step "${current}/${steps}" "验证安装"
@@ -886,6 +953,11 @@ install_all() {
     if [[ "$STATUS_MCP_CONFIG" == "已配置" && "$STATUS_CHROME" == "已安装" && "$STATUS_NODE" == "已安装" ]]; then
         log_success "Chrome DevTools MCP 安装完成！"
         echo ""
+        if [[ "$scope" == "global" ]]; then
+            echo "  范围: 全局 — 所有 Claude Code 项目均可使用"
+        else
+            echo "  范围: 当前项目 — 仅本项目可见"
+        fi
         echo "  下一步:"
         echo "  1. 重启 Claude Code 以加载新 MCP 配置"
         echo "  2. 运行 'bash $0 --detect' 确认状态"
@@ -1141,13 +1213,16 @@ usage() {
   --uninstall    直接卸载 Chrome DevTools MCP（非交互式）
   --detect       检测当前环境（非交互式）
   --force        强制重装（配合 --install 使用）
+  --scope SCOPE  安装范围: local (仅当前项目) / global (所有项目)
+                 默认 local，非交互模式下必须指定
   --port PORT    指定 Chrome DevTools 调试端口（默认 9222）
   --help         显示此帮助信息
 
 示例:
   $(basename "$0")                            交互式菜单
-  $(basename "$0") --install                  自动安装
-  $(basename "$0") --install --force          强制重装
+  $(basename "$0") --install --scope local    安装到当前项目
+  $(basename "$0") --install --scope global   安装到全局
+  $(basename "$0") --install --scope global --force  全局强制重装
   $(basename "$0") --detect                   检测环境
   $(basename "$0") --uninstall                自动卸载
 EOF
@@ -1155,15 +1230,23 @@ EOF
 }
 
 parse_args() {
-    local mode="menu"
+    MODE="menu"
     FORCE_INSTALL="false"
+    INSTALL_SCOPE=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --install)    mode="install" ;;
-            --uninstall)  mode="uninstall" ;;
-            --detect)     mode="detect" ;;
+            --install)    MODE="install" ;;
+            --uninstall)  MODE="uninstall" ;;
+            --detect)     MODE="detect" ;;
             --force)      FORCE_INSTALL="true" ;;
+            --scope)
+                shift
+                case "${1:-}" in
+                    local|global) INSTALL_SCOPE="$1" ;;
+                    *) log_error "--scope 参数必须为 local 或 global"; exit 1 ;;
+                esac
+                ;;
             --port)
                 shift
                 CHROME_DEBUG_PORT="${1:-9222}"
@@ -1176,8 +1259,6 @@ parse_args() {
         esac
         shift
     done
-
-    echo "$mode"
 }
 
 # ============================================================
@@ -1185,19 +1266,19 @@ parse_args() {
 # ============================================================
 
 main() {
-    # --help 在 $() 子 shell 外提前处理
+    # --help 在 parse_args 前提前处理
     for arg in "$@"; do
         if [[ "$arg" == "--help" || "$arg" == "-h" ]]; then
             usage
         fi
     done
 
-    local mode
-    mode="$(parse_args "$@")"
+    # 不再使用子 shell，parse_args 直接设置全局变量
+    parse_args "$@"
 
     detect_all
 
-    case "$mode" in
+    case "$MODE" in
         install)
             install_all
             ;;
