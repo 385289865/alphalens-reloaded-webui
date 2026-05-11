@@ -1,0 +1,16 @@
+# LiteFS configuration for metadata.db read/write separation
+# See https://github.com/superfly/litefs for details
+
+fuse:
+  dir: "./db"
+
+exec:
+  - cmd: "uvicorn backend.app.main:app --host 0.0.0.0 --port 8000"
+
+proxy:
+  addr: ":8001"
+  target: "localhost:8000"
+  db: "metadata.db"
+
+rules:
+  - pattern: "metadata.db"

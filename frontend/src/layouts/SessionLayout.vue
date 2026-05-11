@@ -64,14 +64,16 @@ const sessionId = computed(() => route.params.sid as string);
 const steps = [
   { label: 'Upload Data', path: 'upload', key: 'upload' },
   { label: 'Browse Data', path: 'data', key: 'data' },
-  { label: 'Configure Analysis', path: 'configure', key: 'configure' },
+  { label: 'Templates', path: 'templates', key: 'templates' },
+  { label: 'Configure (Legacy)', path: 'configure', key: 'configure' },
   { label: 'Results', path: 'results', key: 'results' },
 ];
 
 function stepStatus(step: { key: string }) {
   const current = route.name as string;
   if (step.key === 'upload') return 'process';
-  if (step.key === 'data' && (current === 'BrowseData' || current === 'Configure' || current === 'AnalysisProgress' || current === 'AnalysisResults')) return 'finish';
+  if (step.key === 'data' && (current === 'BrowseData' || current === 'Templates' || current === 'Configure' || current === 'AnalysisProgress' || current === 'WorkflowProgress' || current === 'AnalysisResults')) return 'finish';
+  if (step.key === 'templates' && (current === 'Templates' || current === 'WorkflowProgress' || current === 'AnalysisResults')) return 'finish';
   if (step.key === 'configure' && (current === 'Configure' || current === 'AnalysisProgress' || current === 'AnalysisResults')) return 'finish';
   if (step.key === 'results' && (current === 'AnalysisResults')) return 'finish';
   if (route.path.includes(step.key)) return 'process';

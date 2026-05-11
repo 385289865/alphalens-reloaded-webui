@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.app.config import settings
 from backend.app.services.data_service import DataService
 from backend.app.routers import upload, data, analysis, tasks
+from backend.app.flow_builder.router import router as flow_builder_router
+from backend.app.perfact.router import router as perfact_router
 
 
 @asynccontextmanager
@@ -51,6 +53,8 @@ def create_app() -> FastAPI:
     app.include_router(data.router, prefix="/api/v1/data", tags=["Data"])
     app.include_router(analysis.router, prefix="/api/v1/analysis", tags=["Analysis"])
     app.include_router(tasks.router, prefix="/api/v1/tasks", tags=["Tasks"])
+    app.include_router(flow_builder_router)
+    app.include_router(perfact_router)
 
     @app.get("/api/v1/health", tags=["Health"])
     async def health():

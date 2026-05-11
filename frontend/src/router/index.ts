@@ -40,6 +40,12 @@ const routes: RouteRecordRaw[] = [
         component: () => import('@/pages/session/AnalysisConfigPage.vue'),
         meta: { requiresUpload: true },
       },
+      {
+        path: 'templates',
+        name: 'Templates',
+        component: () => import('@/pages/session/TemplateSelectPage.vue'),
+        meta: { requiresUpload: true },
+      },
     ],
   },
   {
@@ -52,6 +58,11 @@ const routes: RouteRecordRaw[] = [
         path: 'progress',
         name: 'AnalysisProgress',
         component: () => import('@/pages/session/AnalysisProgressPage.vue'),
+      },
+      {
+        path: 'workflow-progress',
+        name: 'WorkflowProgress',
+        component: () => import('@/pages/session/WorkflowProgressPage.vue'),
       },
       {
         path: 'results',
