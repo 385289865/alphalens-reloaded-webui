@@ -5,7 +5,7 @@ const fs = require('fs');
 
 const BASE = 'http://localhost:5173';
 const API  = 'http://localhost:8000';
-const OUT  = path.resolve(__dirname, '../example/images');
+const OUT  = path.resolve(__dirname, './images');
 
 async function shot(page, name) {
   await page.waitForTimeout(1000);
@@ -139,5 +139,5 @@ async function shot(page, name) {
   await shot(page, '14-analysis-complete');
 
   await browser.close();
-  console.log('\n✅ All 14 screenshots in example/images/');
+  console.log('\n✅ All 14 screenshots in how_to_use/images/');
 })();

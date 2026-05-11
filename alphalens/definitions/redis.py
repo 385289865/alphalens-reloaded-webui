@@ -1,6 +1,6 @@
 """Redis service definition (Celery broker)."""
 
-from services import ServiceDef
+from alphalens import ServiceDef
 
 service = ServiceDef(
     name="redis",

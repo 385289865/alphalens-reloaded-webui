@@ -1,6 +1,6 @@
 """Vue 3 frontend service definition."""
 
-from services import ServiceDef, ROOT
+from alphalens import ServiceDef, ROOT
 
 FRONTEND_DIR = ROOT / "frontend"
 

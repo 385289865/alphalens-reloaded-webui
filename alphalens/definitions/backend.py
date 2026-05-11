@@ -1,7 +1,7 @@
 """FastAPI backend service definition."""
 
 import sys
-from services import ServiceDef
+from alphalens import ServiceDef
 
 service = ServiceDef(
     name="backend",

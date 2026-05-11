@@ -1,8 +1,8 @@
 """Service registry — auto-discovers service definitions and provides CRUD.
 
 Services are auto-discovered from:
-1. services/definitions/*.py — Python modules exporting a `service` attribute
-2. services/registry.json — JSON file for 3rd-party / dynamic registrations
+1. alphalens/definitions/*.py — Python modules exporting a `service` attribute
+2. alphalens/registry.json — JSON file for 3rd-party / dynamic registrations
 """
 
 from __future__ import annotations
@@ -14,11 +14,11 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
-from services import ServiceDef, DEFINITIONS_DIR, REGISTRY_FILE
+from alphalens import ServiceDef, DEFINITIONS_DIR, REGISTRY_FILE
 
 
 def _load_python_definitions() -> dict[str, ServiceDef]:
-    """Load all .py service definitions from services/definitions/."""
+    """Load all .py service definitions from alphalens/definitions/."""
     result = {}
     if not DEFINITIONS_DIR.exists():
         return result
@@ -27,7 +27,7 @@ def _load_python_definitions() -> dict[str, ServiceDef]:
     for f in sorted(DEFINITIONS_DIR.glob("*.py")):
         if f.name.startswith("_"):
             continue
-        mod_name = f"services.definitions.{f.stem}"
+        mod_name = f"alphalens.definitions.{f.stem}"
         try:
             spec = importlib.util.spec_from_file_location(mod_name, f)
             if spec and spec.loader:

@@ -40,6 +40,19 @@ Alphalens WebUI 是一个基于 Web 的量化因子分析平台。它将 alphale
 
 **两种模式都会生成相同的数据集**，区别仅在于数据是否已预加载到 DuckDB 中。
 
+### 新架构（v0.5+）
+
+系统引入两个新层，替代旧的 Celery 管道：
+
+| 层 | 作用 | 说明 |
+|----|------|------|
+| **flow_builder** | 模板注册与工作流编排 | 5 种预定义模板，前端选择模板 → 自动生成 WorkflowDefinition |
+| **perfact** | 串行执行器 + 原子操作 | 逐步执行 18 个原子操作，每个步骤结果持久化到 SQLite |
+
+工作流：**Templates（模板选择）→ 参数配置 → perfact 串行执行 → 实时进度（按步骤）→ 结果查看**
+
+> 旧版 Celery 管道依然可用（Configure 页面），但推荐使用新的模板驱动路径。
+
 ---
 
 ### 三、数据集说明
@@ -126,12 +139,21 @@ Price rows:        1260
 Assets:            5
 DuckDB path:       db/alphalens.db
 
-Starting Alphalens WebUI (dev mode)...
-  redis: starting... PID 12345
-  backend: starting... PID 12346
-  celery: starting... PID 12347
-  frontend: starting... PID 12348
-...
+Alphalens WebUI (dev mode)
+
+── Starting 4 services ──
+  [10] redis: started (PID 12345)
+  [20] backend: started (PID 12346)
+  [30] celery: started (PID 12347)
+  [40] frontend: started (PID 12348)
+
+── Health checks ──
+  redis: healthy
+  backend: healthy
+  celery: healthy
+  frontend: healthy
+
+All services healthy.
 ```
 
 此时系统已包含一个名为"Price Factor Demo"的 Session，数据已预加载。您可以跳过步骤 2-5，直接从**步骤 6**开始。
@@ -149,12 +171,21 @@ Generated factor CSV:  db/test_data/factor.csv  (1,260 rows)
 Generated prices CSV:  db/test_data/prices.csv  (252 rows)
 Assets: AAPL, MSFT, GOOGL, AMZN, JPM
 
-Starting Alphalens WebUI (dev mode)...
-  redis: starting... PID 12345
-  backend: starting... PID 12346
-  celery: starting... PID 12347
-  frontend: starting... PID 12348
-...
+Alphalens WebUI (dev mode)
+
+── Starting 4 services ──
+  [10] redis: started (PID 12345)
+  [20] backend: started (PID 12346)
+  [30] celery: started (PID 12347)
+  [40] frontend: started (PID 12348)
+
+── Health checks ──
+  redis: healthy
+  backend: healthy
+  celery: healthy
+  frontend: healthy
+
+All services healthy.
 ```
 
 此时系统已启动，但 DuckDB 为空。您需要按照以下步骤手动上传数据。
@@ -292,49 +323,63 @@ Starting Alphalens WebUI (dev mode)...
 
 ---
 
-#### 步骤 7：配置分析参数
+#### 步骤 7：选择分析模板（新路径）
 
-1. 在左侧 Sidebar 导航中，点击 **Configure**（第 3 步）
-2. **或者** 点击页面底部的 **Configure Analysis** 按钮
+> 系统 v0.5+ 推荐通过模板驱动分析，旧版 Configure 页面仍可使用（见"旧路径"）。
+
+1. 在左侧 Sidebar 导航中，点击 **Templates**（第 3 步）
+2. URL 变为：`http://localhost:5173/sessions/{uuid}/templates`
 
 **预期结果：**
-- 页面显示分析配置表单
-- URL 变为：`http://localhost:5173/sessions/{uuid}/configure`
+- 页面显示 5 个模板卡片：
 
-**配置参数：**
+| 模板名称 | 步骤数 | 说明 |
+|---------|--------|------|
+| **Full Analysis** | 18 | 完整 pipeline（10 计算 + 8 图表） |
+| **IC Only** | 5 | 仅 IC 分析 |
+| **Returns Only** | 6 | 仅收益分析 |
+| **Event Study Only** | 2 | 事件研究（平均累积收益） |
+| **Turnover & Stability** | 5 | 换手率与稳定性 |
+
+3. 点击 **Full Analysis** 卡片
+
+**预期结果：**
+- 跳转到参数配置表单（URL 不变，表单动态渲染）
+- 表单根据模板的 `configurable_params` 动态生成控件：
 
 | 参数 | 控件类型 | 设置值 | 说明 |
 |------|----------|--------|------|
-| **Periods** | 按钮组 | [1, 5, 10, 21] | 点击 "+" 按钮添加 21 天周期 |
+| **Periods** | 标签多选（MultiSelectTag） | [1, 5, 10, 21] | 点击添加 21 天 |
 | **Quantiles** | 滑块 | 5 | 将 5 只股票分为 5 组 |
-| **filter_zscore** | 数字输入 | 20 | 因子值 Z-Score > 20 视为异常值 |
-| **max_loss** | 数字输入 | 0.35 | 允许最多丢弃 35% 的数据 |
-| **long_short** | 开关 | ON | 计算多空组合收益 |
-| **group_neutral** | 开关 | OFF | 本指南不分组 |
+| **filter_zscore** | 数字输入 | 20 | Z-Score > 20 视为异常值 |
+| **max_loss** | 数字输入 | 0.35 | 最多丢弃 35% 数据 |
+| **long_short** | 开关 | ON | 计算多空组合 |
+| **group_neutral** | 开关 | OFF | 不分组 |
 | **zero_aware** | 开关 | OFF | 价格无零值 |
 | **cumulative_returns** | 开关 | ON | 计算累积收益 |
-| **by_group** | 开关 | OFF | 每组分开展示 |
+| **by_group** | 开关 | OFF | 整体展示 |
 
-![分析配置页面](images/06-configure.png)
+4. 设置完成后点击 **Run Workflow**
 
-*Configure 页面：配置分析参数，包括 Periods、Quantiles、开关选项等*
+**系统内部流程：**
+```
+POST /api/v1/flow-builder/workflows
+  → flow_builder 根据模板创建 WorkflowDefinition
+  → perfact SerialExecutor 开始串行执行 18 个原子步骤
+  → 每个步骤结果写入 {job_id}.db（SQLite）
+  → 状态写入 metadata.db（SQLite）
+```
 
-**详细操作：**
+---
 
-**调整 Periods：**
-1. 默认显示 [1, 5, 10] 三个周期按钮
-2. 可以点击已选中的按钮取消选择
-3. 点击 "+" 按钮（或输入框）添加周期 21
-4. 最终选择 [1, 5, 10, 21]
-   - 1 = 1 日收益（次日收益）
-   - 5 = 5 日收益（约 1 周）
-   - 10 = 10 日收益（约 2 周）
-   - 21 = 21 日收益（约 1 个月）
+#### 步骤 7b（旧路径）：传统 Configure 页面
 
-**调整 Quantiles：**
-1. 拖动滑块从默认值调整到 5
-2. 滑块范围：2 到 100
-3. 设置 5 表示将 5 只股票按价格从低到高分为 5 组，每组 1 只股票
+如果您更习惯旧版 Celery 驱动的方式，可以：
+
+1. 左侧 Sidebar 点击 **Configure (Legacy)**
+2. 参数配置与传统方式相同（见下方说明）
+
+> 两种路径最终生成的分析结果格式一致，可互相查看。
 
 **其他参数：**
 1. filter_zscore：输入 20（默认值）
@@ -354,62 +399,82 @@ Starting Alphalens WebUI (dev mode)...
 
 ---
 
-#### 步骤 8：运行分析
+#### 步骤 8：运行分析（新路径 - perfact）
 
 1. 确认所有参数已正确设置
-2. 点击 **Run Analysis** 按钮
+2. 点击 **Run Workflow** 按钮
 
 **预期结果：**
-- 按钮变为加载状态（显示 loading spinner）
-- 页面自动跳转到 **Progress** 页面
-- URL 变为：`http://localhost:5173/sessions/{sid}/analysis/{aid}/progress`
+- 按钮变为加载状态
+- 页面自动跳转到 **Workflow Progress** 页面
+- URL 变为：`http://localhost:5173/sessions/{sid}/analysis/{aid}/workflow-progress`
 
-> **系统内部流程**：点击按钮后，前端通过 API 调用 `POST /api/v1/analysis/run`，后端创建 Celery 任务并立即返回 `analysis_id` 和 `task_id`。前端随即开始轮询状态（每 2 秒）。
+> **系统内部流程**：点击按钮后，前端调用 `POST /api/v1/flow-builder/workflows`，flow_builder 从模板创建 WorkflowDefinition，perfact SerialExecutor 开始串行执行。前端每 2 秒轮询 `GET /api/v1/perfact/jobs/{job_id}`。
+
+#### 步骤 8b（旧路径 - Celery）
+
+如果使用传统 Configure 页面：
+
+1. 确认参数已正确设置
+2. 点击 **Run Analysis** 按钮
+3. 页面跳转到旧版 Progress 页面
+
+> **旧路径系统内部流程**：`POST /api/v1/analysis/run` → 创建 Celery 任务 → 前端轮询状态（每 2 秒）
 
 ---
 
-#### 步骤 9：监控分析进度
+#### 步骤 9：监控分析进度（新路径）
+
+**URL：** `http://localhost:5173/sessions/{sid}/analysis/{aid}/workflow-progress`
 
 **页面布局：**
-- 顶部显示分析 ID 和状态标签（Running ⏳）
-- 中间显示环形进度条（0% → 100%）
-- 下方显示 8 个 Pipeline 步骤
-- 右侧显示已用时间
+- 顶部显示 Job ID 和状态标签
+- 中间显示环形进度条（completed_steps / total_steps）
+- 下方显示按依赖顺序排列的**所有原子步骤**（Full Analysis = 18 步）
 
-**Pipeline 步骤与状态映射：**
+**Full Analysis 模板的 18 个步骤：**
 
-| 步骤 | 阶段名称 | 进度范围 | 预计耗时 |
-|------|---------|----------|----------|
-| 1 | ⏳ Computing forward returns | 0% - 15% | ~1-2 秒 |
-| 2 | ⏳ Computing factor quantiles | 15% - 25% | ~1 秒 |
-| 3 | ⏳ Computing IC (Information Coefficient) | 25% - 40% | ~2-3 秒 |
-| 4 | ⏳ Computing factor returns | 40% - 55% | ~2 秒 |
-| 5 | ⏳ Computing alpha/beta | 55% - 70% | ~2-3 秒 |
-| 6 | ⏳ Computing turnover | 70% - 80% | ~1 秒 |
-| 7 | ⏳ Computing cumulative returns | 80% - 90% | ~1 秒 |
-| 8 | ⏳ Generating charts | 90% - 100% | ~3-5 秒 |
+| 顺序 | 步骤类型 | 说明 | 预计耗时 |
+|------|---------|------|----------|
+| 1 | get_clean_factor | 加载因子和价格数据 | ~2-3 秒 |
+| 2 | factor_information_coefficient | 计算 IC | ~2 秒 |
+| 3 | mean_information_coefficient | 计算 Mean IC | ~1 秒 |
+| 4 | factor_returns | 计算因子收益 | ~2 秒 |
+| 5 | factor_alpha_beta | 计算 Alpha/Beta | ~2 秒 |
+| 6 | mean_return_by_quantile | 计算分位数收益 | ~1 秒 |
+| 7 | compute_mean_returns_spread | 计算多空价差 | ~1 秒 |
+| 8 | quantile_turnover | 计算换手率 | ~1 秒 |
+| 9 | factor_rank_autocorrelation | 计算秩自相关 | ~1 秒 |
+| 10 | average_cumulative_return | 计算累积收益 | ~1 秒 |
+| 11-18 | 8 个 chart 操作 | 生成图表（base64） | ~3-5 秒 |
 
 **观察要点：**
-- 进度条会平滑地从 0% 增长到 100%
-- 当前步骤会高亮显示（黄色/蓝色）
-- 已完成步骤显示绿色勾选图标
-- 页面每 2 秒自动刷新状态
-- 总运行时间：约 15-30 秒（取决于机器性能）
+- 当前执行步骤高亮显示（蓝色动画）
+- 已完成步骤显示绿色勾选
+- 失败步骤显示红色 X 和错误信息
+- 步骤之间的依赖线清晰可见
+- 总运行时间：约 15-30 秒
 
 **完成状态：**
 - 状态标签变为 **Completed** ✅
 - 进度条显示 100%
-- 所有步骤显示绿色勾选
-- 页面**自动跳转**到 Results 页面
+- 所有步骤绿色勾选
+- 结果自动保存到 `db/jobs/{job_id}.db`
 
-![分析进度页面](images/07-progress.png)
+#### 步骤 9b（旧路径 - 8 步骤进度）
 
-*Progress 页面：监控 8 个 Pipeline 步骤的执行进度*
+如果使用传统 Celery 路径，Progress 页面显示 8 个阶段：
 
-**如果分析失败：**
-- 状态标签变为 **Failed** ❌
-- 显示错误信息
-- 可以点击 "Retry" 重新运行
+| 步骤 | 阶段名称 | 进度范围 |
+|------|---------|----------|
+| 1 | Computing forward returns | 0%-15% |
+| 2 | Computing factor quantiles | 15%-25% |
+| 3 | Computing IC | 25%-40% |
+| 4 | Computing factor returns | 40%-55% |
+| 5 | Computing alpha/beta | 55%-70% |
+| 6 | Computing turnover | 70%-80% |
+| 7 | Computing cumulative returns | 80%-90% |
+| 8 | Generating charts | 90%-100% |
 
 ---
 
@@ -663,10 +728,10 @@ URL: `http://localhost:5173/sessions/{sid}/analysis/{aid}/results`
 
 #### Q2: 分析一直卡在某个进度？
 
-- 检查 Celery Worker 是否在运行（`python manage.py status`）
-- 检查 Redis 是否在运行
-- 查看日志：`python manage.py logs celery`
-- 点击 **Revoke** 取消任务后重试
+- **新路径（Templates + perfact）**：检查 metadata.db 中的 job 状态，查看日志：`python manage.py logs backend`
+- **旧路径（Celery）**：检查 Celery Worker 是否在运行（`python manage.py status`），检查 Redis 是否在运行，查看日志：`python manage.py logs celery`
+- 如果 perfact 执行中卡住，可以查看 `db/jobs/{job_id}.db` 中的中间结果
+- 重试：在 WorkflowProgressPage 点击 **Retry** 按钮（或通过 API：`POST /api/v1/perfact/jobs/{job_id}/retry`）
 
 #### Q3: 图表加载不出来？
 
@@ -676,16 +741,37 @@ URL: `http://localhost:5173/sessions/{sid}/analysis/{aid}/results`
 
 #### Q4: 如何重新运行分析？
 
+**新路径（Templates）：**
+1. 回到 Templates 页面选择模板
+2. 调整参数
+3. 再次点击 **Run Workflow**
+4. 系统创建新的 workflow，生成新的 `job_id`
+
+**旧路径（Celery）：**
 1. 回到 Configure 页面
 2. 调整参数（或保持相同）
 3. 再次点击 **Run Analysis**
-4. 系统会创建新的分析（新的 `analysis_id`）
+4. 系统创建新的分析（新的 `analysis_id`）
 
 #### Q5: 如何查看之前运行的分析结果？
 
 - 在 Session 详情页的 Sidebar 中
 - 点击 "Analysis History" 区域
 - 选择之前的分析 ID
+
+#### Q6: Celery 和 perfact 有什么区别？
+
+| 维度 | Celery（旧） | Perfact（新） |
+|------|-------------|---------------|
+| 执行方式 | 异步 Worker 池 | 单进程串行 |
+| 任务队列 | Redis | 无（直接执行） |
+| 结果存储 | DuckDB | `{job_id}.db`（SQLite 每任务） |
+| 状态管理 | Redis + DuckDB | `metadata.db`（SQLite WAL） |
+| 步骤粒度 | 8 个大阶段 | 18 个原子操作 |
+| 错误恢复 | 任务级重试 | 步骤级重试 + 跳过 |
+| 依赖 | 需要 Redis | 无外部依赖 |
+
+> Celery 路径将在后续版本中废弃，新项目请使用 Templates + perfact 路径。
 
 ---
 
@@ -723,6 +809,172 @@ curl http://localhost:8000/api/v1/data/sessions/{sid}/factor?page=1&page_size=10
 
 # 获取价格数据
 curl http://localhost:8000/api/v1/data/sessions/{sid}/prices?page=1&page_size=10
+```
+
+---
+
+### 八、服务管理（Service Management）
+
+从 v0.5 开始，所有服务通过 `alphalens/definitions/*.py` 插件自动发现，无需修改 `manage.py`。
+
+#### 8.1 服务定义
+
+每个服务在 `alphalens/definitions/` 下有一个独立的 Python 文件：
+
+```python
+# alphalens/definitions/redis.py
+from alphalens import ServiceDef
+
+service = ServiceDef(
+    name="redis",
+    display_name="Redis",
+    description="Redis message broker",
+    command_dev=["redis-server", "--port", "6379"],
+    health_check="tcp:localhost:6379",
+    order=10,        # 启动顺序（数字越小越早）
+    port=6379,
+    persistent=True,  # 后台运行
+)
+```
+
+#### 8.2 内置服务列表
+
+| 服务 | 端口 | 启动顺序 | 依赖 | 健康检查方式 |
+|------|------|---------|------|-------------|
+| redis | 6379 | 10 | - | tcp:localhost:6379 |
+| backend | 8000 | 20 | redis | http:localhost:8000/api/v1/health |
+| celery | - | 30 | redis, backend | - |
+| frontend | 5173 | 40 | backend | http:localhost:5173 |
+| litefs | - | 5 | - | file:./db/metadata-replica.db |
+
+#### 8.3 CLI 命令
+
+```bash
+# 列出所有注册服务
+python manage.py service list
+
+# 输出示例：
+# Name             Display Name          Order    Port     Health Check
+# --------------------------------------------------------------------
+# redis            Redis                 10       6379     tcp:localhost:6379
+# backend          FastAPI Backend       20       8000     http:localhost:8000/api/v1/health
+# celery           Celery Worker         30       0
+# frontend         Vue 3 Frontend        40       5173     http:localhost:5173
+
+# 注册新服务（动态，无需重启）
+python manage.py service register my-worker \
+  --display-name "My Worker" \
+  --order 35 \
+  --health-check "http:http://localhost:9000/health" \
+  --description "Custom analysis worker" \
+  --depends-on backend \
+  -- python3 -m my_worker.server
+
+# 卸载服务
+python manage.py service unregister my-worker
+
+# 启动/停止特定服务
+python manage.py start backend
+python manage.py stop frontend
+```
+
+#### 8.4 alphalens/registry.json
+
+动态注册的服务存储在 `alphalens/registry.json` 中，与 Python 定义自动合并。
+
+```json
+[
+  {
+    "name": "my-worker",
+    "display_name": "My Worker",
+    "command_dev": ["python3", "-m", "my_worker.server"],
+    "health_check": "http:http://localhost:9000/health",
+    "order": 35
+  }
+]
+```
+
+> 合并规则：JSON 注册的同名服务会覆盖 Python 定义，适合生产环境覆盖开发配置。
+
+#### 8.5 交互式菜单模式
+
+系统提供交互式菜单，通过数字选择管理所有服务：
+
+```bash
+# 进入交互式菜单
+python manage.py menu
+
+# 快捷方式（同上）
+python -m alphalens
+
+# 生产环境模式
+python manage.py menu --mode prod
+```
+
+**菜单界面预览：**
+
+```
+========================================================
+  Alphalens Service Manager
+========================================================
+  Mode: dev
+────────────────────────────────────────────────────────
+  1)  Start all services
+  2)  Stop all services
+  3)  Restart all services
+  4)  Show status
+  5)  Health check all services
+  6)  List registered services
+  7)  Start specific service
+  8)  Stop specific service
+  9)  View service logs
+  10) Database info
+  11) Generate test data
+  12) Run tests
+────────────────────────────────────────────────────────
+  0)  Exit
+========================================================
+Select option:
+```
+
+> 菜单模式会循环显示，直到选择 `0) Exit` 退出。
+
+---
+
+### 九、LiteFS 生产部署
+
+LiteFS 实现 metadata.db 的读写分离，适用于生产环境的水平扩展。
+
+#### 9.1 配置 (`litefs.yml`)
+
+```yaml
+fuse:
+  dir: "./db"
+exec:
+  - cmd: "uvicorn backend.app.main:app --host 0.0.0.0 --port 8000"
+proxy:
+  addr: ":8001"
+  target: "localhost:8000"
+  db: "metadata.db"
+```
+
+#### 9.2 读写路由中间件
+
+```python
+# backend/app/middleware/db_routing.py
+def get_metadata_db(request: Request = None) -> MetadataDB:
+    if request and request.method in ("GET", "OPTIONS", "HEAD"):
+        return _replica_db  # 读请求 → LiteFS 只读副本
+    return _primary_db       # 写请求 → 主节点
+```
+
+所有 GET 请求（查询 job/task 状态）读取 LiteFS 副本，POST/PUT/DELETE 写入主节点。
+
+#### 9.3 启动方式
+
+```bash
+# 生产模式启动（自动启用 LiteFS）
+python manage.py start --prod
 ```
 
 ---
@@ -793,10 +1045,42 @@ date,AAPL,MSFT,GOOGL,AMZN,JPM
 | 1 | `python manage.py start --generate-test-db` | 终端 |
 | 2 | 打开 http://localhost:5173 | 浏览器 |
 | 3 | 在 Session 列表中点击 **Price Factor Demo** | Session 列表页 |
-| 4 | 左侧 Sidebar 点击 **Configure** | Session 详情页 |
-| 5 | 设置参数（同步骤 7） | Configure 页面 |
-| 6 | 点击 **Run Analysis** | Configure 页面 |
-| 7 | 查看进度（同步骤 9） | Progress 页面 |
-| 8 | 查看结果（同步骤 10-15） | Results 页面 |
+| 4a | **新路径（推荐）**：左侧 Sidebar 点击 **Templates** | Session 详情页 |
+| 4b | **旧路径**：左侧 Sidebar 点击 **Configure (Legacy)** | Session 详情页 |
+| 5a | 选择 Full Analysis 模板 → 配置参数 | Templates 页面 |
+| 5b | 设置参数（同步骤 7） | Configure 页面 |
+| 6a | 点击 **Run Workflow** | Templates 页面 |
+| 6b | 点击 **Run Analysis** | Configure 页面 |
+| 7 | 查看进度 | WorkflowProgress / Progress 页面 |
+| 8 | 查看结果 | Results 页面 |
 
-此模式适合重复演示或已熟悉上传流程的用户。
+此模式适合重复演示或已熟悉上传流程的用户。新用户在 Templates 路径下可获得更精细的步骤进度展示。
+
+### 附录：flow_builder + perfact API 参考
+
+#### flow_builder 端点（前缀：`/api/v1/flow-builder`）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/templates` | 列出所有可用模板 |
+| GET | `/templates/{template_id}` | 获取模板详情（含所有步骤） |
+| POST | `/workflows` | 从模板创建工作流 → 通过 perfact 执行 |
+
+#### perfact 端点（前缀：`/api/v1/perfact`）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/jobs/{job_id}` | 获取 Job 信息及所有任务 |
+| GET | `/jobs/{job_id}/tasks` | 获取 Job 的任务列表 |
+| GET | `/jobs/{job_id}/results/{task_id}` | 获取任务的执行结果 |
+| POST | `/jobs/{job_id}/retry` | 重试失败的 Job |
+
+#### 5 个预定义模板
+
+| 模板 ID | 步骤数 | 包含的原子操作 |
+|---------|--------|---------------|
+| full_analysis | 18 | 10 计算 + 8 图表（完整 pipeline） |
+| ic_only | 5 | 数据准备 → IC → Mean IC → IC 图表 |
+| returns_only | 6 | 数据准备 → 因子收益 → Alpha/Beta → 分位数收益图表 |
+| event_study_only | 2 | 数据准备 → 平均累积收益 |
+| turnover_only | 5 | 数据准备 → 换手率 → 秩自相关 → 图表 |

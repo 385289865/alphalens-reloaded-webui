@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Alphalens WebUI - Plugin-based Service Management CLI.
 
-Auto-discovers all services from services/definitions/*.py and
-services/registry.json.  3rd-party services can register via:
+Auto-discovers all services from alphalens/definitions/*.py and
+alphalens/registry.json.  3rd-party services can register via:
     python manage.py service register <name> <command_dev> --health-check ...
 
 Usage:
@@ -22,6 +22,11 @@ Usage:
     python manage.py db reset                    Drop and recreate DuckDB
     python manage.py init                        First-time setup
     python manage.py test                        Run tests
+
+    # Interactive menu mode
+    python manage.py menu                        Interactive service manager
+    python manage.py menu --mode prod            Production mode
+    python -m alphalens                          Shortcut: same as 'menu'
 """
 
 import json
@@ -32,7 +37,7 @@ from pathlib import Path
 
 import click
 
-from services import (
+from alphalens import (
     ServiceDef, PID_DIR, LOG_DIR, ROOT as SVC_ROOT,
     start_service as svc_start,
     stop_service as svc_stop,
@@ -41,7 +46,7 @@ from services import (
     _pid_file, _read_pid, _is_running,
     _log_file, run_health_check,
 )
-from services.registry import discover_all, register_service, unregister_service
+from alphalens.registry import discover_all, register_service, unregister_service
 
 
 # ── Paths ──────────────────────────────────────────────────────────
@@ -82,6 +87,221 @@ def get_sorted_services() -> list[ServiceDef]:
 def cli():
     """Alphalens WebUI - Service Management CLI."""
     _ensure_dirs()
+
+
+# ── Interactive Menu ─────────────────────────────────────────────────
+
+@cli.command()
+@click.option("--mode", default="dev", type=click.Choice(["dev", "prod"]))
+def menu(mode: str):
+    """Interactive menu mode for service management."""
+    svc_names = lambda: get_service_names()
+    svcs = lambda: get_sorted_services()
+
+    def wait_key():
+        click.echo("")
+        click.prompt("Press Enter to continue", prompt_suffix="", default="", show_default=False)
+
+    while True:
+        click.echo("\n" + "=" * 56)
+        click.echo("  \033[1mAlphalens Service Manager\033[0m")
+        click.echo("=" * 56)
+        click.echo(f"  Mode: {mode}")
+        click.echo("─" * 56)
+        click.echo("   \033[94m1)\033[0m  Start all services")
+        click.echo("   \033[94m2)\033[0m  Stop all services")
+        click.echo("   \033[94m3)\033[0m  Restart all services")
+        click.echo("   \033[94m4)\033[0m  Show status")
+        click.echo("   \033[94m5)\033[0m  Health check all services")
+        click.echo("   \033[94m6)\033[0m  List registered services")
+        click.echo("   \033[94m7)\033[0m  Start specific service")
+        click.echo("   \033[94m8)\033[0m  Stop specific service")
+        click.echo("   \033[94m9)\033[0m  View service logs")
+        click.echo("   \033[94m10)\033[0m Database info")
+        click.echo("   \033[94m11)\033[0m Generate test data")
+        click.echo("   \033[94m12)\033[0m Run tests")
+        click.echo("─" * 56)
+        click.echo("   \033[91m0)\033[0m  Exit")
+        click.echo("=" * 56)
+
+        choice = click.prompt("Select option", type=int, default=0)
+
+        if choice == 0:
+            click.echo("Goodbye.")
+            break
+
+        elif choice == 1:
+            click.echo("\n── Starting all services ──")
+            for svc in svcs():
+                click.echo(f"  [{svc.order:02d}] {svc.name}: ", nl=False)
+                click.echo(svc_start(svc, mode))
+                time.sleep(0.5)
+            wait_key()
+
+        elif choice == 2:
+            click.echo("\n── Stopping all services ──")
+            for svc in reversed(svcs()):
+                click.echo(f"  {svc.name}: ", nl=False)
+                click.echo(svc_stop(svc.name))
+            wait_key()
+
+        elif choice == 3:
+            click.echo("\n── Restarting all services ──")
+            for svc in reversed(svcs()):
+                svc_stop(svc.name, force=True)
+            for svc in svcs():
+                click.echo(f"  {svc.name}: ", nl=False)
+                click.echo(svc_start(svc, mode))
+                time.sleep(0.5)
+            wait_key()
+
+        elif choice == 4:
+            click.echo(f"\n{'Service':<16} {'PID':<8} {'Running':<10} {'Healthy':<10}")
+            click.echo("-" * 44)
+            for svc in svcs():
+                s = svc_status(svc)
+                r = "\033[32m✓\033[0m" if s["running"] else "\033[31m✗\033[0m"
+                h = "\033[32m✓\033[0m" if s["healthy"] else "\033[31m✗\033[0m"
+                pid = str(s["pid"]) if s["pid"] else "-"
+                click.echo(f"{svc.name:<16} {pid:<8} {r:<10} {h:<10}")
+            wait_key()
+
+        elif choice == 5:
+            click.echo("")
+            all_ok = True
+            for svc in svcs():
+                h = run_health_check(svc.health_check)
+                status = "\033[32m✓\033[0m healthy" if h else "\033[31m✗\033[0m UNHEALTHY"
+                click.echo(f"  {svc.name}: {status}")
+                if not h:
+                    all_ok = False
+            if all_ok:
+                click.echo("\nAll services healthy.")
+            else:
+                click.echo("\nSome services unhealthy. Check logs.")
+            wait_key()
+
+        elif choice == 6:
+            svc_list = get_sorted_services()
+            if not svc_list:
+                click.echo("No services registered.")
+            else:
+                click.echo(f"\n{'Name':<16} {'Display Name':<22} {'Order':<8} {'Port':<8} {'Health Check':<30}")
+                click.echo("-" * 84)
+                for svc in svc_list:
+                    click.echo(
+                        f"{svc.name:<16} {svc.display_name:<22} {svc.order:<8} "
+                        f"{svc.port if svc.port else '-':<8} {svc.health_check:<30}"
+                    )
+                click.echo(f"\nTotal: {len(svc_list)} services")
+            wait_key()
+
+        elif choice == 7:
+            names = svc_names()
+            if not names:
+                click.echo("No services available.")
+                wait_key()
+                continue
+            click.echo("\nAvailable services:")
+            for i, n in enumerate(names, 1):
+                click.echo(f"  {i}) {n}")
+            idx = click.prompt("Select service", type=int, default=1)
+            if 1 <= idx <= len(names):
+                svc = get_services().get(names[idx - 1])
+                if svc:
+                    click.echo(f"\n  {svc.name}: ", nl=False)
+                    click.echo(svc_start(svc, mode))
+            wait_key()
+
+        elif choice == 8:
+            names = svc_names()
+            if not names:
+                click.echo("No services available.")
+                wait_key()
+                continue
+            click.echo("\nRunning services:")
+            running = [n for n in names if svc_status(get_services()[n])["running"]]
+            if not running:
+                click.echo("  (none)")
+                wait_key()
+                continue
+            for i, n in enumerate(running, 1):
+                click.echo(f"  {i}) {n}")
+            idx = click.prompt("Select service to stop", type=int, default=1)
+            if 1 <= idx <= len(running):
+                click.echo(f"\n  {running[idx - 1]}: ", nl=False)
+                click.echo(svc_stop(running[idx - 1]))
+            wait_key()
+
+        elif choice == 9:
+            names = svc_names()
+            if not names:
+                click.echo("No services available.")
+                wait_key()
+                continue
+            click.echo("\nServices:")
+            for i, n in enumerate(names, 1):
+                click.echo(f"  {i}) {n}")
+            idx = click.prompt("Select service to view logs", type=int, default=1)
+            if 1 <= idx <= len(names):
+                name = names[idx - 1]
+                log_f = _log_file(name)
+                if not log_f.exists():
+                    click.echo(f"No logs found for '{name}'")
+                else:
+                    lines = click.prompt("Lines to show", type=int, default=50)
+                    content = log_f.read_text().splitlines()
+                    click.echo(f"\n=== {name} logs (last {lines} lines) ===")
+                    for line in content[-lines:]:
+                        click.echo(line)
+            wait_key()
+
+        elif choice == 10:
+            # Call the existing db info command logic directly
+            from backend.app.config import Settings
+            cfg = Settings()
+            db_path = Path(cfg.DB_PATH)
+            if not db_path.exists():
+                click.echo("Database does not exist yet.")
+            else:
+                size_mb = db_path.stat().st_size / (1024 * 1024)
+                click.echo(f"\nDatabase: {db_path}")
+                click.echo(f"Size: {size_mb:.2f} MB")
+                try:
+                    import duckdb
+                    conn = duckdb.connect(str(db_path))
+                    tables = conn.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'main' ORDER BY table_name").fetchall()
+                    click.echo(f"\nTables ({len(tables)}):")
+                    for (tbl,) in tables:
+                        cnt = conn.execute(f"SELECT count(*) FROM \"{tbl}\"").fetchone()[0]
+                        click.echo(f"  {tbl:<35} {cnt:>8} rows")
+                    conn.close()
+                except Exception as e:
+                    click.echo(f"  Error: {e}")
+            wait_key()
+
+        elif choice == 11:
+            click.echo("\n── Generating test data ──")
+            from backend.scripts.generate_test_data import generate_price_factor_dataset
+            generate_price_factor_dataset(output_dir="db/test_data")
+            click.echo("Done.")
+            wait_key()
+
+        elif choice == 12:
+            click.echo("\n── Running tests ──")
+            import subprocess
+            r = subprocess.run(
+                [sys.executable, "-m", "pytest", "backend/tests/", "-v", "-x"],
+                cwd=Path(__file__).resolve().parent,
+            )
+            if r.returncode == 0:
+                click.echo("\nAll tests passed.")
+            else:
+                click.echo(f"\nTests failed ({r.returncode}).")
+            wait_key()
+
+        else:
+            click.echo("Invalid option. Please try again.")
 
 
 # ── Service Registry Management ────────────────────────────────────

@@ -4,7 +4,7 @@ This service is optional — only needed in production deployments
 requiring read/write separation on metadata.db.
 """
 
-from services import ServiceDef
+from alphalens import ServiceDef
 
 service = ServiceDef(
     name="litefs",

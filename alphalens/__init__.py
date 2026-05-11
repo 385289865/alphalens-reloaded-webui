@@ -1,6 +1,6 @@
-"""Service management framework.
+"""Alphalens Service Management Framework.
 
-Each service is defined as a ServiceDef instance in services/definitions/.
+Each service is defined as a ServiceDef instance in alphalens/definitions/.
 The registry auto-discovers all definitions and provides CRUD operations.
 """
 
@@ -19,8 +19,8 @@ from typing import Callable, Optional
 
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFINITIONS_DIR = ROOT / "services" / "definitions"
-REGISTRY_FILE = ROOT / "services" / "registry.json"
+DEFINITIONS_DIR = ROOT / "alphalens" / "definitions"
+REGISTRY_FILE = ROOT / "alphalens" / "registry.json"
 PID_DIR = ROOT / ".alphalens" / "pids"
 LOG_DIR = ROOT / ".alphalens" / "logs"
 
