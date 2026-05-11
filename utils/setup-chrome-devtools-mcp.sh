@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # ============================================================
-# Google MCP (Chrome DevTools MCP) 管理工具
-# Linux 无头环境 Chrome MCP 一键安装/卸载/检测
+# Chrome DevTools MCP 管理工具
+# Linux 无头环境一键安装/卸载/检测 (Google 官方出品)
 # ============================================================
 # 使用方式:
-#   bash setup-google-mcp.sh          交互式菜单
-#   bash setup-google-mcp.sh --install   直接安装
-#   bash setup-google-mcp.sh --uninstall 直接卸载
-#   bash setup-google-mcp.sh --detect    直接检测
-#   bash setup-google-mcp.sh --help      帮助信息
+#   bash setup-chrome-devtools-mcp.sh           交互式菜单
+#   bash setup-chrome-devtools-mcp.sh --install   直接安装
+#   bash setup-chrome-devtools-mcp.sh --uninstall 直接卸载
+#   bash setup-chrome-devtools-mcp.sh --detect    直接检测
+#   bash setup-chrome-devtools-mcp.sh --help      帮助信息
 # ============================================================
 
 SCRIPT_VERSION="1.0.0"
@@ -298,7 +298,7 @@ render_menu() {
 
     clear
     echo -e "${CYAN}╔═══════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║${NC}  ${BOLD}Google MCP 管理工具 v${SCRIPT_VERSION}${NC}            ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  ${BOLD}Chrome DevTools MCP 管理工具 v${SCRIPT_VERSION}${NC}  ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  Chrome DevTools MCP · Linux 无头环境     ${CYAN}║${NC}"
     echo -e "${CYAN}╚═══════════════════════════════════════════════╝${NC}"
     echo ""
@@ -328,7 +328,7 @@ detect_status_line() {
 }
 
 show_menu() {
-    local menu_items=("📦 安装 Google MCP" "🗑 卸载 Google MCP" "🔍 检测当前环境" "❌ 退出")
+    local menu_items=("📦 安装 Chrome DevTools MCP" "🗑 卸载 Chrome DevTools MCP" "🔍 检测当前环境" "❌ 退出")
     local selected=0
     local key
 
@@ -391,7 +391,7 @@ show_report() {
 
     # 推荐操作
     if [[ "$STATUS_CHROME" != "已安装" || "$STATUS_NODE" != "已安装" || "$STATUS_MCP_CONFIG" != "已配置" ]]; then
-        echo -e "${YELLOW}推荐操作: 请在菜单中选择「安装 Google MCP」${NC}"
+        echo -e "${YELLOW}推荐操作: 请在菜单中选择「安装 Chrome DevTools MCP」${NC}"
     else
         echo -e "${GREEN}所有组件已就绪，可以正常使用 Chrome DevTools MCP。${NC}"
     fi
@@ -555,7 +555,7 @@ write_start_script() {
 #!/usr/bin/env bash
 # ============================================================
 # start-chrome-mcp.sh
-# 由 setup-google-mcp.sh 自动生成
+# 由 setup-chrome-devtools-mcp.sh 自动生成
 # Chrome DevTools MCP 启动脚本 - Linux 无头环境
 # ============================================================
 set -uo pipefail
@@ -687,23 +687,21 @@ setup_mcp_config() {
     local project_root
     project_root="$(get_project_root)"
     local start_script_path="${project_root}/.claude/start-chrome-mcp.sh"
-    local project_settings="${project_root}/.claude/settings.local.json"
+    local settings_json="${project_root}/.claude/settings.json"
+    local local_settings="${project_root}/.claude/settings.local.json"
 
     # 创建目录
-    mkdir -p "$(dirname "$start_script_path")"
-    mkdir -p "$GLOBAL_SCRIPTS_DIR"
+    mkdir -p "$(dirname "$start_script_path")" "$GLOBAL_SCRIPTS_DIR" "$(dirname "$settings_json")"
 
     # 1. 生成运行时脚本
     write_start_script "$(dirname "$start_script_path")"
 
-    # 2. 复制到全局（给 Claude Code 用）
+    # 2. 复制到全局
     cp "$start_script_path" "${GLOBAL_SCRIPTS_DIR}/start-chrome-mcp.sh"
     chmod +x "${GLOBAL_SCRIPTS_DIR}/start-chrome-mcp.sh"
 
-    # 3. 配置全局 mcp.json
-    log_info "配置 MCP JSON..."
-    mkdir -p "$(dirname "$GLOBAL_MCP_JSON")"
-
+    # 3. 写入项目 settings.json（内联 mcpServers，与 playwright 相同模式）
+    log_info "配置 MCP 到项目 settings.json..."
     python3 -c '
 import json, sys, os
 
@@ -716,40 +714,59 @@ if os.path.exists(filepath):
         data = json.load(f)
 
 data.setdefault("mcpServers", {})
-data["mcpServers"]["chrome-devtools"] = {
-    "command": "bash",
-    "args": [start_script]
-}
+entry = data["mcpServers"].get("chrome-devtools", {})
+entry["command"] = "bash"
+entry["args"] = [start_script]
+# 保留已有的 env 等自定义字段
+data["mcpServers"]["chrome-devtools"] = entry
 
 with open(filepath, "w") as f:
     json.dump(data, f, indent=2, ensure_ascii=False)
-' "$GLOBAL_MCP_JSON" "${GLOBAL_SCRIPTS_DIR}/start-chrome-mcp.sh"
+' "$settings_json" "${GLOBAL_SCRIPTS_DIR}/start-chrome-mcp.sh"
+    log_success "settings.json 已更新: ${settings_json}"
 
-    log_success "MCP JSON 已更新: ${GLOBAL_MCP_JSON}"
-
-    # 4. 配置项目 settings.local.json
-    log_info "配置项目 MCP 设置..."
-    mkdir -p "$(dirname "$project_settings")"
-
+    # 4. 同步更新全局 mcp.json（保留已有 env 等字段）
+    log_info "同步全局 MCP JSON..."
+    mkdir -p "$(dirname "$GLOBAL_MCP_JSON")"
     python3 -c '
 import json, sys, os
 
 filepath = sys.argv[1]
+start_script = sys.argv[2]
 
 data = {}
 if os.path.exists(filepath):
     with open(filepath) as f:
         data = json.load(f)
 
-enabled = data.setdefault("enabledMcpjsonServers", [])
-if "chrome-devtools" not in enabled:
-    enabled.append("chrome-devtools")
+data.setdefault("mcpServers", {})
+entry = data["mcpServers"].get("chrome-devtools", {})
+entry["command"] = "bash"
+entry["args"] = [start_script]
+data["mcpServers"]["chrome-devtools"] = entry
 
 with open(filepath, "w") as f:
     json.dump(data, f, indent=2, ensure_ascii=False)
-' "$project_settings"
+' "$GLOBAL_MCP_JSON" "${GLOBAL_SCRIPTS_DIR}/start-chrome-mcp.sh"
+    log_success "MCP JSON 已同步: ${GLOBAL_MCP_JSON}"
 
-    log_success "项目设置已更新: ${project_settings}"
+    # 5. 同步 settings.local.json（enabledMcpjsonServers，冗余但无害）
+    if [[ -f "$local_settings" ]]; then
+        python3 -c '
+import json, sys, os
+filepath = sys.argv[1]
+if os.path.exists(filepath):
+    with open(filepath) as f:
+        data = json.load(f)
+    enabled = data.setdefault("enabledMcpjsonServers", [])
+    if "chrome-devtools" not in enabled:
+        enabled.append("chrome-devtools")
+    with open(filepath, "w") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+' "$local_settings"
+        log_success "settings.local.json 已同步: ${local_settings}"
+    fi
+
     return 0
 }
 
@@ -839,7 +856,7 @@ install_all() {
     local current=0
 
     clear
-    log_title "📦 开始安装 Google MCP"
+    log_title "📦 开始安装 Chrome DevTools MCP"
 
     ((current++))
     log_step "${current}/${steps}" "检测系统环境"
@@ -867,7 +884,7 @@ install_all() {
 
     echo ""
     if [[ "$STATUS_MCP_CONFIG" == "已配置" && "$STATUS_CHROME" == "已安装" && "$STATUS_NODE" == "已安装" ]]; then
-        log_success "Google MCP 安装完成！"
+        log_success "Chrome DevTools MCP 安装完成！"
         echo ""
         echo "  下一步:"
         echo "  1. 重启 Claude Code 以加载新 MCP 配置"
@@ -884,10 +901,27 @@ install_all() {
 remove_mcp_config() {
     local project_root
     project_root="$(get_project_root)"
-    local project_settings="${project_root}/.claude/settings.local.json"
+    local settings_json="${project_root}/.claude/settings.json"
+    local local_settings="${project_root}/.claude/settings.local.json"
     local start_script="${project_root}/.claude/start-chrome-mcp.sh"
 
     log_info "清理 MCP 配置..."
+
+    # 从项目 settings.json 的 mcpServers 移除
+    if [[ -f "$settings_json" ]]; then
+        python3 -c '
+import json, sys, os
+filepath = sys.argv[1]
+if os.path.exists(filepath):
+    with open(filepath) as f:
+        data = json.load(f)
+    data.get("mcpServers", {}).pop("chrome-devtools", None)
+    with open(filepath, "w") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    print("已从 mcpServers 移除 chrome-devtools")
+' "$settings_json"
+        log_success "已更新: ${settings_json}"
+    fi
 
     # 从全局 mcp.json 移除
     if [[ -f "$GLOBAL_MCP_JSON" ]]; then
@@ -900,13 +934,13 @@ if os.path.exists(filepath):
     data.get("mcpServers", {}).pop("chrome-devtools", None)
     with open(filepath, "w") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
-    print("已移除 chrome-devtools 条目")
+    print("已从 mcpServers 移除 chrome-devtools")
 ' "$GLOBAL_MCP_JSON"
         log_success "已更新: ${GLOBAL_MCP_JSON}"
     fi
 
-    # 从项目 settings 移除
-    if [[ -f "$project_settings" ]]; then
+    # 从 settings.local.json enabledMcpjsonServers 移除
+    if [[ -f "$local_settings" ]]; then
         python3 -c '
 import json, sys, os
 filepath = sys.argv[1]
@@ -919,8 +953,8 @@ if os.path.exists(filepath):
     with open(filepath, "w") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
     print("已从 enabledMcpjsonServers 移除 chrome-devtools")
-' "$project_settings"
-        log_success "已更新: ${project_settings}"
+' "$local_settings"
+        log_success "已更新: ${local_settings}"
     fi
 
     # 删除运行时脚本
@@ -940,7 +974,6 @@ if os.path.exists(filepath):
     if curl -sf "http://127.0.0.1:${CHROME_DEBUG_PORT}/json/version" >/dev/null 2>&1; then
         log_info "检测到 Chrome DevTools 正在运行 (端口 ${CHROME_DEBUG_PORT})"
         if confirm "是否关闭 Chrome DevTools?"; then
-            # 查找并 kill 监听该端口的 Chrome 进程
             local chrome_pids
             chrome_pids="$(lsof -ti:"${CHROME_DEBUG_PORT}" 2>/dev/null || ss -tlnp "sport = :${CHROME_DEBUG_PORT}" 2>/dev/null | grep -oP 'pid=\K\d+' || true)"
             if [[ -n "$chrome_pids" ]]; then
@@ -1064,7 +1097,7 @@ uninstall_all() {
     detect_all
 
     clear
-    log_title "🗑 卸载 Google MCP"
+    log_title "🗑 卸载 Chrome DevTools MCP"
 
     echo -e "${YELLOW}注意: 卸载操作将移除相关组件。输入 y 确认每个步骤。${NC}"
     echo ""
@@ -1104,19 +1137,19 @@ usage() {
 用法: $(basename "$0") [选项]
 
 选项:
-  --install      直接安装 Google MCP（非交互式）
-  --uninstall    直接卸载 Google MCP（非交互式）
+  --install      直接安装 Chrome DevTools MCP（非交互式）
+  --uninstall    直接卸载 Chrome DevTools MCP（非交互式）
   --detect       检测当前环境（非交互式）
   --force        强制重装（配合 --install 使用）
   --port PORT    指定 Chrome DevTools 调试端口（默认 9222）
   --help         显示此帮助信息
 
 示例:
-  $(basename "$0")                  交互式菜单
-  $(basename "$0") --install        自动安装
-  $(basename "$0") --install --force 强制重装
-  $(basename "$0") --detect         检测环境
-  $(basename "$0") --uninstall      自动卸载
+  $(basename "$0")                            交互式菜单
+  $(basename "$0") --install                  自动安装
+  $(basename "$0") --install --force          强制重装
+  $(basename "$0") --detect                   检测环境
+  $(basename "$0") --uninstall                自动卸载
 EOF
     exit 0
 }
